@@ -8,6 +8,8 @@ dependencies = [
     "ragkit-retrieval[google,postgres]",
     "ragkit-ingest",
     "ragkit-agents[google,sql,postgres]",
+    "ragkit-observe",
+    "ragkit-evals",
     "ragkit-server",
     "ragkit-cli",
 ]
@@ -36,6 +38,8 @@ ragkit-core = { workspace = true }
 ragkit-retrieval = { workspace = true }
 ragkit-ingest = { workspace = true }
 ragkit-agents = { workspace = true }
+ragkit-observe = { workspace = true }
+ragkit-evals = { workspace = true }
 ragkit-server = { workspace = true }
 ragkit-cli = { workspace = true }
 

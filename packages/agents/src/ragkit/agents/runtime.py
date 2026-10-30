@@ -37,12 +37,15 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from ragkit.agents.checkpointers import open_checkpointers
+from ragkit.agents.guardrails import guardrail_middleware, injection_spec
 from ragkit.agents.manifest import MANIFEST_FILENAME, AgentManifest
 from ragkit.agents.mcp import open_mcp_tools, select_mcp_tools
 from ragkit.agents.retrieval import RetrievedContextMiddleware, search_tool
 from ragkit.agents.subagents import build_order, subagent_tool
+from ragkit.agents.telemetry import CostBudgetMiddleware, TelemetryMiddleware, agent_run
 from ragkit.core.config import ProjectConfig
 from ragkit.core.errors import ConfigError, RagkitError
+from ragkit.core.telemetry import RunUsage
 from ragkit.retrieval.knowledge import KnowledgeBase
 
 logger = logging.getLogger(__name__)
@@ -87,6 +90,7 @@ class AgentResult:
     thread_id: str
     pending: list[PendingAction] = field(default_factory=list)
     structured: dict[str, Any] | None = None
+    usage: RunUsage = field(default_factory=RunUsage)
 
     @property
     def status(self) -> Literal["completed", "waiting_for_approval"]:
@@ -107,19 +111,21 @@ class Agent:
         """Run one turn."""
         thread_id = thread_id or new_thread_id()
         await self._check_not_waiting(thread_id)
-        result = await self.graph.ainvoke(_user_input(message), _config(thread_id))
-        return await self._result(result, thread_id)
+        with agent_run(self.name, thread_id, message) as usage:
+            result = await self.graph.ainvoke(_user_input(message), _config(thread_id))
+            return await self._result(result, thread_id, usage)
 
     async def resume(self, thread_id: str, decisions: Sequence[ApprovalDecision]) -> AgentResult:
         """Continue a turn that stopped for approval, with one decision per pending action."""
         command = await self._resume_command(thread_id, decisions)
-        result = await self.graph.ainvoke(command, _config(thread_id))
-        return await self._result(result, thread_id)
+        with agent_run(self.name, thread_id, None) as usage:
+            result = await self.graph.ainvoke(command, _config(thread_id))
+            return await self._result(result, thread_id, usage)
 
     async def astream(self, message: str, thread_id: str) -> AsyncIterator[str]:
         """Yield the reply's text as the model produces it. Check `pending` afterwards."""
         await self._check_not_waiting(thread_id)
-        async for text in self._stream(_user_input(message), thread_id):
+        async for text in self._stream(_user_input(message), thread_id, message):
             yield text
 
     async def astream_resume(
@@ -127,7 +133,7 @@ class Agent:
     ) -> AsyncIterator[str]:
         """Check the decisions now, then return an iterator over the continued reply."""
         command = await self._resume_command(thread_id, decisions)
-        return self._stream(command, thread_id)
+        return self._stream(command, thread_id, None)
 
     async def pending(self, thread_id: str) -> list[PendingAction]:
         """Tool calls on this thread that are waiting for a decision."""
@@ -150,15 +156,18 @@ class Agent:
                 )
         return actions
 
-    async def _stream(self, graph_input: Any, thread_id: str) -> AsyncIterator[str]:
-        async for chunk, metadata in self.graph.astream(
-            graph_input, _config(thread_id), stream_mode="messages"
-        ):
-            # Sub-agents run inside tools and their tokens surface here too; keep ours only.
-            if metadata.get("lc_agent_name", self.name) != self.name:
-                continue
-            if isinstance(chunk, AIMessageChunk) and chunk.text:
-                yield chunk.text
+    async def _stream(
+        self, graph_input: Any, thread_id: str, message: str | None
+    ) -> AsyncIterator[str]:
+        with agent_run(self.name, thread_id, message):
+            async for chunk, metadata in self.graph.astream(
+                graph_input, _config(thread_id), stream_mode="messages"
+            ):
+                # Sub-agents run inside tools and their tokens surface here too; keep ours.
+                if metadata.get("lc_agent_name", self.name) != self.name:
+                    continue
+                if isinstance(chunk, AIMessageChunk) and chunk.text:
+                    yield chunk.text
 
     async def _check_not_waiting(self, thread_id: str) -> None:
         if await self.pending(thread_id):
@@ -188,7 +197,7 @@ class Agent:
             decisions_for.append(_hitl_decision(action, decision))
         return Command(resume={key: {"decisions": value} for key, value in by_interrupt.items()})
 
-    async def _result(self, result: dict[str, Any], thread_id: str) -> AgentResult:
+    async def _result(self, result: dict[str, Any], thread_id: str, usage: RunUsage) -> AgentResult:
         structured = result.get("structured_response")
         if isinstance(structured, BaseModel):
             structured = structured.model_dump(mode="json")
@@ -203,6 +212,7 @@ class Agent:
             thread_id=thread_id,
             pending=await self.pending(thread_id),
             structured=structured,
+            usage=usage,
         )
 
 
@@ -316,18 +326,31 @@ def build_agent(
         logger.warning("Agent %r declares %s, which is not wired yet.", manifest.name, feature)
 
     tools = [*_load_tools(path, manifest), *extra_tools]
+    chat_model = model or manifest.model or project.default_model
     middleware: list[Any] = [
         ModelCallLimitMiddleware(run_limit=manifest.budget.max_steps, exit_behavior="end")
     ]
-    if manifest.fallback_models:
-        middleware.append(ModelFallbackMiddleware(*manifest.fallback_models))
+    if manifest.budget.max_cost_usd is not None:
+        if isinstance(chat_model, str) and chat_model not in project.pricing:
+            raise ConfigError(
+                f"Agent {manifest.name!r} sets budget.max_cost_usd, but ragkit.yaml has no "
+                f"pricing for {chat_model}."
+            )
+        middleware.append(CostBudgetMiddleware(manifest.budget.max_cost_usd))
     if manifest.retrieval:
         if knowledge is None:
             raise ConfigError(f"Agent {manifest.name!r} uses retrieval but no knowledge base.")
+        screen = injection_spec(manifest.guardrails)
         if manifest.pattern == "rag-chat":
-            middleware.append(RetrievedContextMiddleware(knowledge, manifest.retrieval))
+            # Outside the telemetry middleware, so retrieval is a sibling of the chat span.
+            middleware.append(RetrievedContextMiddleware(knowledge, manifest.retrieval, screen))
         else:
-            tools.append(search_tool(knowledge, manifest.retrieval, project))
+            tools.append(search_tool(knowledge, manifest.retrieval, project, screen))
+    # Retrieved passages are screened one by one above, so the tool-level screen skips them.
+    middleware += guardrail_middleware(manifest.guardrails, skip_tools=["search_knowledge"])
+    middleware.append(TelemetryMiddleware(manifest.name, chat_model, project.pricing))
+    if manifest.fallback_models:
+        middleware.append(ModelFallbackMiddleware(*manifest.fallback_models))
     _check_tool_names(manifest, tools)
     if manifest.hitl.require_approval:
         middleware.append(
@@ -340,7 +363,7 @@ def build_agent(
         )
 
     graph = create_agent(
-        model=model or manifest.model or project.default_model,
+        model=chat_model,
         tools=tools,
         system_prompt=_read_prompt(path, manifest),
         middleware=middleware,

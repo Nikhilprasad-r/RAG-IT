@@ -82,10 +82,14 @@ async def test_unwired_features_are_logged(
     project: ProjectConfig, caplog: pytest.LogCaptureFixture
 ) -> None:
     manifest = project.agents_path / "support-agent" / "agent.yaml"
-    manifest.write_text(manifest.read_text() + "guardrails: [pii]\n")
+    manifest.write_text(
+        manifest.read_text().replace(
+            "checkpointer: memory", "checkpointer: memory\n  long_term: true"
+        )
+    )
 
     with caplog.at_level(logging.WARNING):
         async with AgentRuntime(project, model_factory=fake_models()):
             pass
 
-    assert "guardrails" in caplog.text
+    assert "memory.long_term" in caplog.text

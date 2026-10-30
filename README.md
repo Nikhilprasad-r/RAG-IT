@@ -5,11 +5,11 @@ your data sources, it ingests them incrementally into a hybrid (vector +
 keyword) index, and you copy in agent templates that search that index. Agents
 and search are served over HTTP.
 
-> Status: **M2 (agents)**. M0 delivered the workspace, runtime, server and CLI;
-> M1 ingestion, hybrid search and reranking. M2 adds MCP tools, human approval,
-> structured output, multi-agent supervisors, the `sql-analyst`, `extractor` and
-> `supervisor` templates, templates from GitHub or local folders, and Confluence
-> and Notion connectors.
+> Status: **M3 (harness)**. M0 delivered the workspace, runtime, server and CLI;
+> M1 ingestion, hybrid search and reranking; M2 MCP tools, human approval,
+> structured output and multi-agent supervisors. M3 adds OpenTelemetry GenAI
+> tracing (Langfuse, Phoenix, any OTLP backend), token and cost accounting with
+> cost budgets, `ragkit eval` for agents and search with CI gates, and guardrails.
 
 ## Quickstart
 
@@ -20,6 +20,8 @@ cp .env.example .env                       # add your GOOGLE_API_KEY
 uv run ragkit ingest                       # index data/ into the "docs" collection
 uv run ragkit search docs "where is my data stored?"
 uv run ragkit chat rag-chat "How long is a password reset link valid?"
+uv run ragkit eval agent rag-chat          # golden set, LLM judge, gates from agent.yaml
+uv run ragkit eval search docs evals/search.jsonl --mode sparse --mode hybrid
 uv run ragkit serve                        # http://127.0.0.1:8000/docs
 ```
 
@@ -123,14 +125,88 @@ mcp_servers:
 
 MCP sessions open once per process and stay open. `ragkit chat` loads only the
 agent you talk to and its sub-agents. Agents that need approval cannot be
-sub-agents yet. `guardrails`, `memory.long_term` and `budget.max_cost_usd` are in
-the schema but not acted on yet; the runtime logs a warning when they are set.
+sub-agents yet. `memory.long_term` is in the schema but not acted on yet; the
+runtime logs a warning when it is set.
+
+### Guardrails
+
+```yaml
+guardrails:
+  - pii                                    # redact email, card, IP, phone, IBAN in input and output
+  - type: pii
+    kinds: [email, employee_id]
+    patterns: {employee_id: "EMP-\\d{5}"}
+    strategy: mask                         # redact | mask | hash
+    apply_to: [input, output, tool_results]
+  - type: prompt_injection                 # screens tool results and retrieved passages
+    action: annotate                       # annotate (mark as untrusted data) | drop
+  - type: deny                             # refuse without calling the model
+    patterns: ['\bmedical advice\b']
+    message: I can't give medical advice.
+budget:
+  max_cost_usd: 0.05                       # needs a price for the model under pricing
+```
+
+Every guardrail action is a `ragkit.guardrail` span event and is listed in the
+API response's `usage.guardrails`.
+
+## Observability
+
+Spans follow the OpenTelemetry GenAI conventions: `invoke_agent <agent>` contains
+`chat <model>` (tokens, cost, finish reason) and `execute_tool <tool>`. Retrieval
+(`retrieve <collection>`, `rerank`, `embeddings`) and sub-agents nest under the
+step that triggered them, and `ingest <collection>` covers ingestion runs.
+Conversation ids are set as `gen_ai.conversation.id` and `langfuse.session.id`.
+
+```yaml
+observability:
+  exporter: langfuse        # none | console | otlp | langfuse | phoenix
+  capture_content: true     # prompts, replies, tool arguments and results
+pricing:
+  "google_genai:gemini-3.5-flash-lite": {input_per_million: 0.10, output_per_million: 0.40}
+```
+
+Langfuse reads `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`; `phoenix`
+defaults to `http://localhost:6006/v1/traces`; `otlp` to
+`http://localhost:4318/v1/traces`. If the process already has an OpenTelemetry
+tracer provider, ragkit adds its exporter to it. HTTP requests are traced too.
+
+## Evals
+
+`agents/<name>/evals/golden.jsonl`, one case per line:
+
+```json
+{"input": "How long is a reset link valid?", "reference": "30 minutes.",
+ "expected_tools": ["search_knowledge"], "expected_sources": ["password.md"]}
+```
+
+| Metric | Measured when the case has |
+|---|---|
+| `tool_recall` | `expected_tools` (an empty list expects no tool calls) |
+| `source_recall` | `expected_sources`, matched against retrieved passage URIs |
+| `field_accuracy` | a JSON object `reference` (structured output) |
+| `correctness` | a text `reference`, graded by an LLM judge |
+| `groundedness` | retrieval during the run, graded by an LLM judge |
+| `error_rate`, `latency_p50_s`, `latency_p95_s`, `cost_usd` | always (`cost_usd` when priced) |
+
+Gates in `agent.yaml` (`evals.gate: {correctness: 0.8, max_latency_p95_s: 5}`) make
+`ragkit eval agent` exit 1 when a metric misses its threshold, so it can run in CI.
+Approval requests are rejected during evals by default (`evals.on_approval`).
+`ragkit eval search <collection> <dataset>` reports `hit_rate`, `recall` and `mrr`
+per search mode. Reports are written to `.ragkit/evals/`.
+
+```yaml
+# .github/workflows/evals.yml (excerpt)
+- run: uv run ragkit ingest
+- run: uv run ragkit eval agent rag-chat
+- run: uv run ragkit eval search docs evals/search.jsonl --gate hit_rate=0.9
+```
 
 ## HTTP API
 
 | Endpoint | |
 |---|---|
-| `GET /agents`, `POST /agents/{name}/chat`, `POST /agents/{name}/stream` (SSE) | Agents. Replies carry `status` (`completed` or `waiting_for_approval`), `pending` actions and `structured` output |
+| `GET /agents`, `POST /agents/{name}/chat`, `POST /agents/{name}/stream` (SSE) | Agents. Replies carry `status` (`completed` or `waiting_for_approval`), `pending` actions, `structured` output and `usage` (tokens, cost, guardrails) |
 | `POST /agents/{name}/resume`, `POST /agents/{name}/resume/stream` | Continue with `{"thread_id", "decisions": [{"type": "approve" \| "edit" \| "reject", "args", "message"}]}`, one per pending action. A thread that is waiting rejects new messages with 409 |
 | `GET /collections`, `POST /collections/{name}/search` | Search with `query`, `top_k`, `mode`, `filters`, `rerank` |
 
@@ -141,9 +217,11 @@ the schema but not acted on yet; the runtime logs a warning when they are set.
 | `packages/core` | `ragkit.core` | Types, plugin protocols, registry, `ragkit.yaml` config |
 | `packages/retrieval` | `ragkit.retrieval` | Embedders, SQLite and Postgres stores, hybrid search, rerankers, `KnowledgeBase` |
 | `packages/ingest` | `ragkit.ingest` | Connectors, parsers, chunker, incremental pipeline |
-| `packages/agents` | `ragkit.agents` | Manifest schema, LangGraph runtime, MCP, approvals, sub-agents, retrieval wiring, templates |
+| `packages/agents` | `ragkit.agents` | Manifest schema, LangGraph runtime, MCP, approvals, sub-agents, guardrails, telemetry, templates |
+| `packages/observe` | `ragkit.observe` | Tracing exporters (Langfuse, Phoenix, OTLP, console) |
+| `packages/evals` | `ragkit.evals` | Agent and search evals, LLM judge, gates |
 | `packages/server` | `ragkit.server` | FastAPI gateway |
-| `packages/cli` | `ragkit.cli` | `init`, `ingest`, `search`, `collections`, `templates`, `add agent`, `agents`, `chat`, `serve` |
+| `packages/cli` | `ragkit.cli` | `init`, `ingest`, `search`, `collections`, `templates`, `add agent`, `agents`, `chat`, `eval`, `serve` |
 
 ## Local models
 
@@ -174,5 +252,5 @@ uv run ruff check packages tests && uv run ruff format packages tests
 | M0 Foundation (done) | Workspace, core interfaces, config, CLI, runtime, server, `support-agent` |
 | M1 Ingestion (done) | Connectors (files, web, GitHub, custom), parsers, chunking, incremental sync, SQLite and pgvector stores, hybrid search, rerankers, RAG templates |
 | M2 Agents (done) | MCP tools, human approval, structured output, supervisors, SQL analyst / extractor / supervisor templates, templates from GitHub and folders, Confluence and Notion connectors, verified Postgres checkpointer |
-| M3 Harness | OpenTelemetry GenAI tracing, Langfuse, `ragkit eval` with CI gate, guardrails |
+| M3 Harness (done) | OpenTelemetry GenAI tracing (Langfuse, Phoenix, OTLP), token and cost accounting, cost budgets, `ragkit eval` for agents and search with CI gates, PII / prompt-injection / deny guardrails |
 | M4 Scale | Queue-based ingestion workers, scheduled syncs, Helm + KEDA, multi-tenancy and auth, caching |

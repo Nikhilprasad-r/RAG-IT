@@ -34,6 +34,7 @@ from ragkit.agents.runtime import (
 )
 from ragkit.core.config import ProjectConfig
 from ragkit.core.errors import ConfigError
+from ragkit.observe import configure_tracing, instrument_app
 from ragkit.retrieval import KnowledgeBase
 
 
@@ -51,6 +52,17 @@ class PendingActionInfo(BaseModel):
     allowed_decisions: list[str]
 
 
+class Usage(BaseModel):
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float | None = Field(
+        default=None, description="Set when every model used has a price in ragkit.yaml."
+    )
+    guardrails: list[dict[str, str]] = Field(
+        default_factory=list, description="Guardrails that acted during the turn."
+    )
+
+
 class ChatResponse(BaseModel):
     reply: str
     thread_id: str
@@ -61,6 +73,7 @@ class ChatResponse(BaseModel):
     structured: dict[str, Any] | None = Field(
         default=None, description="The agent's output when it has an output_schema."
     )
+    usage: Usage
 
     @classmethod
     def of(cls, result: AgentResult) -> "ChatResponse":
@@ -70,6 +83,12 @@ class ChatResponse(BaseModel):
             status=result.status,
             pending=[_pending_info(p) for p in result.pending],
             structured=result.structured,
+            usage=Usage(
+                input_tokens=result.usage.input_tokens,
+                output_tokens=result.usage.output_tokens,
+                cost_usd=result.usage.cost_usd if result.usage.priced else None,
+                guardrails=result.usage.guardrails,
+            ),
         )
 
 
@@ -117,6 +136,7 @@ def create_app(
     project: ProjectConfig | None = None, *, model_factory: ModelFactory | None = None
 ) -> FastAPI:
     project = project or ProjectConfig.load()
+    configure_tracing(project)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -131,6 +151,7 @@ def create_app(
             yield
 
     app = FastAPI(title=f"ragkit: {project.name}", lifespan=lifespan)
+    instrument_app(app, project)
 
     @app.exception_handler(ApprovalError)
     @app.exception_handler(ThreadWaitingError)

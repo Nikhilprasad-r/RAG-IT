@@ -1,0 +1,6 @@
+{"query": "password reset link expiry", "expected_sources": ["account/password.md"]}
+{"query": "too many requests 429", "expected_sources": ["api.md"]}
+{"query": "how much does Pro cost per user", "expected_sources": ["plans.md"]}
+{"query": "export all workspace data as a zip", "expected_sources": ["faq.html"]}
+{"query": "which data centre region stores my files", "expected_sources": ["faq.html"]}
+{"query": "single sign-on", "expected_sources": ["plans.md"]}

@@ -27,12 +27,24 @@ from ragkit.agents.templates import is_builtin
 from ragkit.core.config import CONFIG_FILENAME, DEFAULT_MODEL, ProjectConfig
 from ragkit.core.errors import ConfigError, RagkitError
 from ragkit.core.types import ScoredChunk
+from ragkit.evals import (
+    AgentCase,
+    EvalReport,
+    Judge,
+    SearchCase,
+    evaluate_agent,
+    evaluate_search,
+    load_cases,
+)
 from ragkit.ingest import ingest as run_ingest
+from ragkit.observe import configure_tracing
 from ragkit.retrieval import CollectionStats, KnowledgeBase, create_store
 
 app = typer.Typer(help="Build scalable RAG and agent applications.", no_args_is_help=True)
 add_app = typer.Typer(help="Copy a template into the current project.", no_args_is_help=True)
 app.add_typer(add_app, name="add")
+eval_app = typer.Typer(help="Measure agent and search quality.", no_args_is_help=True)
+app.add_typer(eval_app, name="eval")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -74,6 +86,24 @@ collections:
       max_tokens: 400
       overlap_tokens: 40
 
+# mcp_servers:             # tools agents can use via tools.mcp
+#   files:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "./data"]
+
+observability:
+  exporter: none           # none | console | otlp | langfuse | phoenix
+  capture_content: false   # record prompts and replies on spans
+  # endpoint: http://localhost:4318/v1/traces
+  # langfuse: {{host: https://cloud.langfuse.com}}   # keys: LANGFUSE_PUBLIC_KEY / _SECRET_KEY
+
+# pricing:                 # USD per million tokens; enables cost tracking and budgets
+#   "{model}": {{input_per_million: 0.10, output_per_million: 0.40}}
+
+evals:
+  # judge_model: {model}
+  on_approval: reject      # how evals answer approval requests
+
 server:
   host: 127.0.0.1
   port: 8000
@@ -87,6 +117,8 @@ GOOGLE_API_KEY=
 # ANTHROPIC_API_KEY=
 # COHERE_API_KEY=
 # GITHUB_TOKEN=
+# LANGFUSE_PUBLIC_KEY=
+# LANGFUSE_SECRET_KEY=
 # DATABASE_URL=postgresql://user:pass@localhost:5432/ragkit
 """
 
@@ -149,7 +181,7 @@ def add_agent_command(
 ) -> None:
     """Copy an agent template into this project's agents folder."""
     with _errors():
-        project = ProjectConfig.load()
+        project = _load_project()
         dest = add_agent(template, project.agents_path, name=name, force=force)
         console.print(f"[green]Added {dest.relative_to(project.root)}[/green]")
         code = sorted(str(p.relative_to(dest)) for p in dest.rglob("*.py"))
@@ -164,7 +196,7 @@ def add_agent_command(
 def agents() -> None:
     """List the agents in this project."""
     with _errors():
-        project = ProjectConfig.load()
+        project = _load_project()
         table = Table("Agent", "Pattern", "Model", "Folder")
         for path in discover_agents(project.agents_path):
             manifest = AgentManifest.from_file(path / MANIFEST_FILENAME)
@@ -183,7 +215,7 @@ def chat(
 ) -> None:
     """Send one message to an agent and stream its reply."""
     with _errors():
-        asyncio.run(_chat(ProjectConfig.load(), agent, message, thread))
+        asyncio.run(_chat(_load_project(), agent, message, thread))
 
 
 async def _chat(project: ProjectConfig, name: str, message: str, thread_id: str | None) -> None:
@@ -242,7 +274,7 @@ def ingest(
 ) -> None:
     """Fetch, parse, chunk, embed and index the configured sources."""
     with _errors():
-        project = ProjectConfig.load()
+        project = _load_project()
         if not project.collections:
             raise ConfigError("No collections are defined in ragkit.yaml.")
         with console.status("Ingesting..."):
@@ -288,7 +320,7 @@ def search(
     if mode not in ("dense", "sparse", "hybrid"):
         raise typer.BadParameter("mode must be dense, sparse or hybrid")
     with _errors():
-        project = ProjectConfig.load()
+        project = _load_project()
         results = asyncio.run(_search(project, collection, query, top_k, mode, rerank))
     if not results:
         console.print("No results.")
@@ -315,7 +347,7 @@ async def _search(
 def collections() -> None:
     """Show each collection's size and embedding model."""
     with _errors():
-        project = ProjectConfig.load()
+        project = _load_project()
         stats = {s.collection: s for s in asyncio.run(_stats(project))}
     table = Table("Collection", "Sources", "Documents", "Chunks", "Embedding model")
     for name, config in project.collections.items():
@@ -336,6 +368,154 @@ async def _stats(project: ProjectConfig) -> list[CollectionStats]:
         return await store.stats()
 
 
+@eval_app.command("agent")
+def eval_agent(
+    agents: Annotated[list[str], typer.Argument(help="Agents to evaluate.")],
+    dataset: Annotated[
+        Path | None, typer.Option(help="JSONL cases (default: evals.dataset in agent.yaml).")
+    ] = None,
+    judge: Annotated[
+        bool, typer.Option(help="Grade correctness and groundedness with an LLM.")
+    ] = True,
+    gate: Annotated[bool, typer.Option(help="Exit 1 when a gate in agent.yaml fails.")] = True,
+    output: Annotated[Path | None, typer.Option(help="Write the JSON report here.")] = None,
+) -> None:
+    """Run each agent's eval dataset and check its gates."""
+    with _errors():
+        project = _load_project()
+        reports = asyncio.run(_eval_agents(project, agents, dataset, judge))
+    _finish_evals(project, reports, gate, output)
+
+
+async def _eval_agents(
+    project: ProjectConfig, names: list[str], dataset: Path | None, use_judge: bool
+) -> list[EvalReport]:
+    judge = Judge(project.evals.judge_model or project.default_model) if use_judge else None
+    reports = []
+    async with AgentRuntime(project, only=names) as runtime:
+        for name in names:
+            agent = runtime.get(name)
+            path = dataset or _agent_dataset(agent.path, agent.manifest)
+            with console.status(f"Evaluating {name}..."):
+                report = await evaluate_agent(
+                    agent,
+                    load_cases(path, AgentCase),
+                    dataset=str(path),
+                    judge=judge,
+                    on_approval=project.evals.on_approval,
+                    concurrency=project.evals.concurrency,
+                    gate=agent.manifest.evals.gate,
+                )
+            reports.append(report)
+    return reports
+
+
+def _agent_dataset(folder: Path, manifest: AgentManifest) -> Path:
+    if not manifest.evals.dataset:
+        raise ConfigError(f"Agent {manifest.name!r} has no evals.dataset; pass --dataset.")
+    return folder / manifest.evals.dataset
+
+
+@eval_app.command("search")
+def eval_search(
+    collection: Annotated[str, typer.Argument(help="Collection to search.")],
+    dataset: Annotated[Path, typer.Argument(help='JSONL with "query" and "expected_sources".')],
+    top_k: Annotated[int, typer.Option("--top-k", "-k")] = 5,
+    mode: Annotated[
+        list[str] | None, typer.Option(help="dense, sparse or hybrid; repeat to compare.")
+    ] = None,
+    rerank: Annotated[bool, typer.Option(help="Apply the project's reranker.")] = True,
+    require: Annotated[
+        list[str] | None,
+        typer.Option("--gate", help="metric=threshold, e.g. recall=0.8; exit 1 below it."),
+    ] = None,
+    output: Annotated[Path | None, typer.Option(help="Write the JSON report here.")] = None,
+) -> None:
+    """Measure hit rate, recall and MRR of a collection's search."""
+    modes = mode or ["hybrid"]
+    for m in modes:
+        if m not in ("dense", "sparse", "hybrid"):
+            raise typer.BadParameter(f"Unknown mode {m!r}")
+    gate = _parse_gate(require or [])
+    with _errors():
+        project = _load_project()
+        cases = load_cases(dataset, SearchCase)
+        reports = asyncio.run(
+            _eval_search(project, collection, cases, str(dataset), top_k, modes, rerank, gate)
+        )
+    _finish_evals(project, reports, True, output)
+
+
+async def _eval_search(
+    project: ProjectConfig,
+    collection: str,
+    cases: list[SearchCase],
+    dataset: str,
+    top_k: int,
+    modes: list[str],
+    rerank: bool,
+    gate: dict[str, float],
+) -> list[EvalReport]:
+    async with KnowledgeBase(project) as knowledge:
+        return [
+            await evaluate_search(
+                knowledge,
+                collection,
+                cases,
+                dataset=dataset,
+                top_k=top_k,
+                mode=m,  # type: ignore[arg-type]
+                rerank=rerank,
+                concurrency=project.evals.concurrency,
+                gate=gate,
+            )
+            for m in modes
+        ]
+
+
+def _parse_gate(entries: list[str]) -> dict[str, float]:
+    gate = {}
+    for entry in entries:
+        name, _, value = entry.partition("=")
+        try:
+            gate[name.strip()] = float(value)
+        except ValueError:
+            raise typer.BadParameter(f"--gate expects metric=number, got {entry!r}") from None
+    return gate
+
+
+def _finish_evals(
+    project: ProjectConfig, reports: list[EvalReport], enforce: bool, output: Path | None
+) -> None:
+    for report in reports:
+        table = Table("Metric", "Value", "Gate", title=f"{report.kind}: {report.target}")
+        gates = {g.metric.removeprefix("max_"): g for g in report.gates}
+        for name, value in report.metrics.items():
+            g = gates.pop(name, None)
+            status = "" if g is None else ("[green]pass[/green]" if g.passed else "[red]fail[/red]")
+            bound = (
+                ""
+                if g is None
+                else f" ({'<=' if g.metric.startswith('max_') else '>='} {g.threshold:g})"
+            )
+            table.add_row(name, f"{value:.3f}", status + bound)
+        for g in gates.values():
+            table.add_row(g.metric, "not measured", "[red]fail[/red]")
+        console.print(table)
+        for case in report.cases:
+            if case.error:
+                err_console.print(f"[red]case {case.id} failed:[/red] {case.error}")
+        stamp = report.started_at.replace(":", "").split(".")[0]
+        slug = report.target.split(" ")[0]
+        path = output or project.root / ".ragkit" / "evals" / f"{report.kind}-{slug}-{stamp}.json"
+        if output and len(reports) > 1:
+            path = output.with_name(f"{output.stem}-{slug}-{reports.index(report)}{output.suffix}")
+        console.print(f"[dim]report: {report.write(path)}[/dim]")
+    if enforce and not all(r.passed for r in reports):
+        err_console.print("[red]Eval gate failed.[/red]")
+        raise typer.Exit(1)
+
+
 @app.command()
 def serve(
     host: Annotated[str | None, typer.Option(help="Defaults to server.host.")] = None,
@@ -346,7 +526,7 @@ def serve(
     import uvicorn
 
     with _errors():
-        project = ProjectConfig.load()
+        project = _load_project()
     uvicorn.run(
         "ragkit.server.app:create_app",
         factory=True,
@@ -360,6 +540,13 @@ def serve(
 def show_version() -> None:
     """Show the installed ragkit version."""
     console.print(version("ragkit-cli"))
+
+
+def _load_project() -> ProjectConfig:
+    """Load ragkit.yaml from the working directory and start tracing if it is configured."""
+    project = ProjectConfig.load()
+    configure_tracing(project)
+    return project
 
 
 @contextmanager

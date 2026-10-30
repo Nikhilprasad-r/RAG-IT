@@ -13,12 +13,15 @@ from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResp
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
+from ragkit.agents.guardrails import InjectionGuardrail, screen_passages
 from ragkit.agents.manifest import RetrievalSpec
 from ragkit.core.config import ProjectConfig
 from ragkit.retrieval.knowledge import KnowledgeBase, format_results
 
 
-async def _search(knowledge: KnowledgeBase, spec: RetrievalSpec, query: str) -> str:
+async def _search(
+    knowledge: KnowledgeBase, spec: RetrievalSpec, query: str, screen: InjectionGuardrail | None
+) -> str:
     results = await knowledge.search_many(
         spec.collections,
         query,
@@ -28,16 +31,21 @@ async def _search(knowledge: KnowledgeBase, spec: RetrievalSpec, query: str) -> 
         rerank=spec.rerank,
         use_rerank=spec.use_rerank,
     )
-    return format_results(results)
+    return format_results(screen_passages(results, screen))
 
 
-def search_tool(knowledge: KnowledgeBase, spec: RetrievalSpec, project: ProjectConfig) -> BaseTool:
+def search_tool(
+    knowledge: KnowledgeBase,
+    spec: RetrievalSpec,
+    project: ProjectConfig,
+    screen: InjectionGuardrail | None = None,
+) -> BaseTool:
     described = "; ".join(
         f"{name}: {project.collection(name).description}".rstrip(": ") for name in spec.collections
     )
 
     async def search_knowledge(query: str) -> str:
-        return await _search(knowledge, spec, query)
+        return await _search(knowledge, spec, query, screen)
 
     return StructuredTool.from_function(
         coroutine=search_knowledge,
@@ -53,10 +61,16 @@ def search_tool(knowledge: KnowledgeBase, spec: RetrievalSpec, project: ProjectC
 class RetrievedContextMiddleware(AgentMiddleware):
     """Adds passages relevant to the latest user message to the system prompt."""
 
-    def __init__(self, knowledge: KnowledgeBase, spec: RetrievalSpec) -> None:
+    def __init__(
+        self,
+        knowledge: KnowledgeBase,
+        spec: RetrievalSpec,
+        screen: InjectionGuardrail | None = None,
+    ) -> None:
         super().__init__()
         self.knowledge = knowledge
         self.spec = spec
+        self.screen = screen
 
     async def awrap_model_call(
         self,
@@ -68,7 +82,7 @@ class RetrievedContextMiddleware(AgentMiddleware):
         )
         if not question:
             return await handler(request)
-        context = await _search(self.knowledge, self.spec, question)
+        context = await _search(self.knowledge, self.spec, question, self.screen)
         prompt = request.system_prompt or ""
         system = SystemMessage(f"{prompt}\n\n<retrieved_context>\n{context}\n</retrieved_context>")
         return await handler(request.override(system_message=system))

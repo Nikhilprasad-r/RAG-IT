@@ -12,6 +12,7 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 
+from ragkit.core import telemetry
 from ragkit.core.config import ProjectConfig
 from ragkit.core.errors import ConfigError
 from ragkit.core.interfaces import Connector
@@ -70,9 +71,17 @@ class IngestPipeline:
         parsers = Parsers(config.parser)
         chunker = MarkdownChunker(config.chunking)
 
-        for source in config.sources:
-            connector = create_connector(source, root=self.project.root)
-            await self._sync_source(collection, connector, parsers, chunker, report, full=full)
+        with telemetry.span(f"ingest {collection}", **{"ragkit.ingest.full": full}) as span:
+            for source in config.sources:
+                connector = create_connector(source, root=self.project.root)
+                with telemetry.span(f"ingest_source {connector.name}"):
+                    await self._sync_source(
+                        collection, connector, parsers, chunker, report, full=full
+                    )
+            for field_name in ("added", "updated", "unchanged", "deleted", "chunks"):
+                span.set_attribute(f"ragkit.ingest.{field_name}", getattr(report, field_name))
+            span.set_attribute("ragkit.ingest.skipped", len(report.skipped))
+            span.set_attribute("ragkit.ingest.failed", len(report.failed))
         return report
 
     async def _sync_source(
@@ -91,15 +100,18 @@ class IngestPipeline:
         tasks: set[asyncio.Task[None]] = set()
 
         async def process(raw: RawDocument) -> None:
-            try:
-                await self._process(
-                    collection, raw, existing.get(raw.uri), parsers, chunker, report, full=full
-                )
-            except Exception as exc:
-                logger.exception("Ingesting %s failed", raw.uri)
-                report.failed.append((raw.uri, str(exc)))
-            finally:
-                semaphore.release()
+            with telemetry.span("ingest_document", **{"ragkit.document.uri": raw.uri}) as span:
+                try:
+                    outcome = await self._process(
+                        collection, raw, existing.get(raw.uri), parsers, chunker, report, full=full
+                    )
+                except Exception as exc:
+                    logger.exception("Ingesting %s failed", raw.uri)
+                    report.failed.append((raw.uri, str(exc)))
+                    outcome = "failed"
+                finally:
+                    semaphore.release()
+                span.set_attribute("ragkit.ingest.outcome", outcome)
 
         listing_complete = True
         try:
@@ -139,20 +151,21 @@ class IngestPipeline:
         report: IngestReport,
         *,
         full: bool,
-    ) -> None:
+    ) -> str:
+        """Ingest one item and return what happened to it."""
         checksum = content_hash(raw.data)
         if previous and previous.checksum == checksum and not full:
             report.unchanged += 1
-            return
+            return "unchanged"
         try:
             parsed = await parsers.parse(raw)
         except UnsupportedFormatError as exc:
             report.skipped.append((raw.uri, str(exc)))
-            return
+            return "skipped"
         except Exception as exc:
             logger.warning("Parsing %s failed: %s", raw.uri, exc)
             report.failed.append((raw.uri, f"parse: {exc}"))
-            return
+            return "failed"
 
         acl = raw.acl or self.project.collection(collection).acl
         document = Document(
@@ -172,7 +185,7 @@ class IngestPipeline:
         chunks = chunker.chunk(document)
         if not chunks:
             report.skipped.append((raw.uri, "no text"))
-            return
+            return "skipped"
         try:
             vectors = await self._embed([chunk.indexed_text for chunk in chunks])
             for chunk, vector in zip(chunks, vectors, strict=True):
@@ -182,13 +195,14 @@ class IngestPipeline:
         except Exception as exc:
             logger.warning("Indexing %s failed: %s", raw.uri, exc)
             report.failed.append((raw.uri, f"index: {exc}"))
-            return
+            return "failed"
 
         report.chunks += len(chunks)
         if previous:
             report.updated += 1
-        else:
-            report.added += 1
+            return "updated"
+        report.added += 1
+        return "added"
 
     async def _embed(self, texts: list[str]) -> list[list[float]]:
         delay = 1.0

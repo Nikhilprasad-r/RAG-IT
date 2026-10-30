@@ -10,11 +10,13 @@ import hashlib
 import math
 import re
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Any
 
 from langchain.embeddings import init_embeddings
 from langchain_core.embeddings import Embeddings
 
+from ragkit.core import telemetry as t
 from ragkit.core.config import EmbeddingsConfig
 from ragkit.core.errors import ConfigError
 
@@ -44,13 +46,27 @@ class LangChainEmbedder:
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
-        for start in range(0, len(texts), self._batch_size):
-            batch = list(texts[start : start + self._batch_size])
-            vectors.extend(await self._embeddings.aembed_documents(batch))
+        with self._span(len(texts)):
+            for start in range(0, len(texts), self._batch_size):
+                batch = list(texts[start : start + self._batch_size])
+                vectors.extend(await self._embeddings.aembed_documents(batch))
         return vectors
 
     async def embed_query(self, text: str) -> list[float]:
-        return await self._embeddings.aembed_query(text)
+        with self._span(1):
+            return await self._embeddings.aembed_query(text)
+
+    def _span(self, count: int) -> AbstractContextManager[Any]:
+        provider, _, name = self.model.partition(":")
+        return t.span(
+            f"embeddings {name}",
+            **{
+                t.OPERATION: "embeddings",
+                t.PROVIDER: provider,
+                t.REQUEST_MODEL: name,
+                "ragkit.embeddings.inputs": count,
+            },
+        )
 
 
 class HashEmbedder:

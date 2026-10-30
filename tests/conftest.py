@@ -71,6 +71,13 @@ def project(tmp_path: Path) -> ProjectConfig:
     return config
 
 
+def _agent_folder(root: Path, name: str, manifest: str, prompt: str = "You help.") -> None:
+    folder = root / "agents" / name
+    (folder / "prompts").mkdir(parents=True)
+    (folder / "agent.yaml").write_text(f"name: {name}\n{manifest}")
+    (folder / "prompts" / "system.md").write_text(prompt)
+
+
 RAG_CONFIG = """\
 name: rag-test
 store:
@@ -125,3 +132,27 @@ def rag_project(tmp_path: Path) -> ProjectConfig:
     """A project with a `docs` collection of three Markdown files and an offline embedder."""
     write_docs(tmp_path)
     return write_project(tmp_path, RAG_CONFIG)
+
+
+_span_exporter = None
+
+
+@pytest.fixture
+def spans():
+    """Finished OpenTelemetry spans recorded during the test."""
+    global _span_exporter
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    if _span_exporter is None:
+        provider = trace.get_tracer_provider()
+        if not isinstance(provider, TracerProvider):
+            provider = TracerProvider()
+            trace.set_tracer_provider(provider)
+        _span_exporter = InMemorySpanExporter()
+        provider.add_span_processor(SimpleSpanProcessor(_span_exporter))
+    _span_exporter.clear()
+    yield _span_exporter
+    _span_exporter.clear()

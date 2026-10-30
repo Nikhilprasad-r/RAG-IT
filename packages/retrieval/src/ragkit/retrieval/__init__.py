@@ -2,7 +2,7 @@
 
 from ragkit.retrieval.embedders import HashEmbedder, LangChainEmbedder, create_embedder
 from ragkit.retrieval.hybrid import HybridRetriever, rrf_fuse
-from ragkit.retrieval.knowledge import KnowledgeBase, format_results
+from ragkit.retrieval.knowledge import KnowledgeBase, format_results, record_retrievals
 from ragkit.retrieval.rerankers import (
     CohereReranker,
     CrossEncoderReranker,
@@ -26,5 +26,6 @@ __all__ = [
     "create_reranker",
     "create_store",
     "format_results",
+    "record_retrievals",
     "rrf_fuse",
 ]

@@ -21,3 +21,8 @@ budget:
 
 evals:
   dataset: evals/golden.jsonl
+  gate:
+    correctness: 0.8
+    groundedness: 0.8
+    source_recall: 0.75
+    max_error_rate: 0

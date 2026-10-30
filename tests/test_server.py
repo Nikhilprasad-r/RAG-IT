@@ -29,6 +29,12 @@ def test_chat_returns_reply_and_reuses_thread(project: ProjectConfig) -> None:
         ).json()
 
     assert first["reply"] == "Hello there."
+    assert second.pop("usage") == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": None,
+        "guardrails": [],
+    }
     assert second == {
         "reply": "Welcome back.",
         "thread_id": first["thread_id"],

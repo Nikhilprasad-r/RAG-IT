@@ -108,6 +108,50 @@ class McpServerConfig(_Strict):
         return self
 
 
+class LangfuseConfig(_Strict):
+    host: str = "https://cloud.langfuse.com"
+    public_key_env: str = "LANGFUSE_PUBLIC_KEY"
+    secret_key_env: str = "LANGFUSE_SECRET_KEY"
+
+
+class ObservabilityConfig(_Strict):
+    """Where traces go. Spans follow the OpenTelemetry GenAI conventions."""
+
+    exporter: Literal["none", "console", "otlp", "langfuse", "phoenix"] = "none"
+    endpoint: str | None = Field(
+        default=None, description="OTLP/HTTP traces URL; defaults depend on the exporter."
+    )
+    headers: dict[str, str] = Field(default_factory=dict)
+    service_name: str | None = Field(default=None, description="Defaults to the project name.")
+    capture_content: bool = Field(
+        default=False,
+        description="Record prompts, replies, tool arguments and results on spans.",
+    )
+    sample_ratio: float = Field(default=1.0, ge=0, le=1)
+    langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
+
+
+class ModelPrice(_Strict):
+    input_per_million: float = Field(ge=0, description="USD per million input tokens.")
+    output_per_million: float = Field(ge=0, description="USD per million output tokens.")
+
+    def cost(self, input_tokens: int, output_tokens: int) -> float:
+        return (
+            input_tokens * self.input_per_million + output_tokens * self.output_per_million
+        ) / 1_000_000
+
+
+class EvalsConfig(_Strict):
+    judge_model: str | None = Field(
+        default=None, description="Model that grades answers; defaults to default_model."
+    )
+    concurrency: int = Field(default=4, ge=1)
+    on_approval: Literal["approve", "reject"] = Field(
+        default="reject",
+        description="How evals answer approval requests; reject avoids real side effects.",
+    )
+
+
 class ProjectConfig(_Strict):
     name: str
     mode: Literal["local", "cluster"] = "local"
@@ -120,6 +164,11 @@ class ProjectConfig(_Strict):
     rerank: RerankConfig | None = None
     collections: dict[str, CollectionConfig] = Field(default_factory=dict)
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    pricing: dict[str, ModelPrice] = Field(
+        default_factory=dict, description="Prices by provider:model, used for cost tracking."
+    )
+    evals: EvalsConfig = Field(default_factory=EvalsConfig)
 
     root: Path = Field(default=Path("."), exclude=True)
 

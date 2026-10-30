@@ -1,16 +1,24 @@
 """Schema for an agent's `agent.yaml`.
 
-The schema already covers the full design (for example guardrails and long-term
-memory) so manifests stay stable as features land. Sections the runtime
+The schema already covers the full design (for example long-term memory) so
+manifests stay stable as features land. Sections the runtime
 does not act on yet are listed by `AgentManifest.unwired_features()`.
 """
 
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
+from ragkit.agents.guardrails import parse_guardrails
 from ragkit.core.config import RerankConfig
 from ragkit.core.errors import ConfigError
 
@@ -94,10 +102,18 @@ class AgentManifest(_Spec):
     )
     tools: ToolsSpec = Field(default_factory=ToolsSpec)
     memory: MemorySpec = Field(default_factory=MemorySpec)
-    guardrails: list[str] = Field(default_factory=list)
+    guardrails: list[Any] = Field(
+        default_factory=list,
+        description="pii, prompt_injection or deny guardrails; see ragkit.agents.guardrails.",
+    )
     hitl: HitlSpec = Field(default_factory=HitlSpec)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     evals: EvalSpec = Field(default_factory=EvalSpec)
+
+    @field_validator("guardrails", mode="before")
+    @classmethod
+    def _parse_guardrails(cls, value: Any) -> list[Any]:
+        return parse_guardrails(value or [])
 
     @model_validator(mode="after")
     def _pattern_requirements(self) -> Self:
@@ -124,10 +140,6 @@ class AgentManifest(_Spec):
         unwired = []
         if self.pattern not in ("react", "rag-chat", "supervisor"):
             unwired.append(f"pattern '{self.pattern}' (runs as 'react')")
-        if self.guardrails:
-            unwired.append("guardrails")
         if self.memory.long_term:
             unwired.append("memory.long_term")
-        if self.budget.max_cost_usd is not None:
-            unwired.append("budget.max_cost_usd")
         return unwired

@@ -1,9 +1,12 @@
 """`KnowledgeBase`: the one search entry point used by agents, the CLI and the server."""
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Self
 
+from ragkit.core import telemetry as t
 from ragkit.core.config import ProjectConfig, RerankConfig
 from ragkit.core.errors import ConfigError
 from ragkit.core.types import Query, ScoredChunk
@@ -13,6 +16,21 @@ from ragkit.retrieval.rerankers import create_reranker
 from ragkit.retrieval.stores import Store, create_store
 
 DEFAULT_TOP_K = 8
+
+_retrieval_log: ContextVar[list[ScoredChunk] | None] = ContextVar(
+    "ragkit_retrieval_log", default=None
+)
+
+
+@contextmanager
+def record_retrievals() -> Iterator[list[ScoredChunk]]:
+    """Collect every passage returned by searches made inside the block (used by evals)."""
+    log: list[ScoredChunk] = []
+    token = _retrieval_log.set(log)
+    try:
+        yield log
+    finally:
+        _retrieval_log.reset(token)
 
 
 class KnowledgeBase:
@@ -80,11 +98,32 @@ class KnowledgeBase:
             filters=filters or {},
             top_k=max(candidates, final_k) if rerank else final_k,
         )
-        retriever = HybridRetriever(self.store, self.embedder, mode=mode, candidates=candidates)
-        results = await retriever.retrieve(query)
-        if rerank and results:
-            results = await self._reranker(rerank).rerank(query, results, final_k)
-        return results[:final_k]
+        attributes = {
+            t.LANGFUSE_TYPE: "retriever",
+            "ragkit.collection": collection,
+            "ragkit.search.mode": mode,
+            "ragkit.search.top_k": final_k,
+            "ragkit.search.candidates": candidates,
+            "ragkit.rerank.provider": rerank.provider if rerank else None,
+        }
+        with t.span(f"retrieve {collection}", **attributes) as span:
+            retriever = HybridRetriever(self.store, self.embedder, mode=mode, candidates=candidates)
+            results = await retriever.retrieve(query)
+            if rerank and results:
+                with t.span(f"rerank {rerank.provider}", **{"ragkit.rerank.model": rerank.model}):
+                    results = await self._reranker(rerank).rerank(query, results, final_k)
+            results = results[:final_k]
+            span.set_attribute("ragkit.search.results", len(results))
+            t.set_content(
+                span,
+                input=text,
+                output=[
+                    {"uri": r.uri, "score": r.score, "text": r.chunk.text[:300]} for r in results
+                ],
+            )
+        if (log := _retrieval_log.get()) is not None:
+            log.extend(results)
+        return results
 
     async def search_many(
         self, collections: Sequence[str], text: str, *, top_k: int | None = None, **options: Any
