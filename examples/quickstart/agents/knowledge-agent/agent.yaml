@@ -1,0 +1,22 @@
+# Knowledge agent: researches your documents with a search tool.
+# The model decides what to search for and can search several times (agentic retrieval).
+name: knowledge-agent
+description: Researches your documents with repeated searches; good for multi-step questions.
+pattern: react
+
+system_prompt: prompts/system.md
+
+retrieval:
+  collections: [docs]   # collections defined in ragkit.yaml
+  mode: hybrid
+  top_k: 5
+  candidates: 50
+
+memory:
+  checkpointer: memory
+
+budget:
+  max_steps: 8          # caps the number of searches plus the final answer
+
+evals:
+  dataset: evals/golden.jsonl

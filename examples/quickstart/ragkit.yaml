@@ -1,0 +1,40 @@
+name: quickstart
+mode: local  # local | cluster
+default_model: google_genai:gemini-3.5-flash-lite
+agents_dir: agents
+
+# Needed for the postgres store and checkpointer.
+# database_url: ${DATABASE_URL}
+
+store:
+  backend: sqlite          # sqlite (single file, no server) | postgres (pgvector)
+  path: .ragkit/index.db
+
+embeddings:
+  model: google_genai:gemini-embedding-2
+  dimensions: 768
+
+# rerank:                  # optional; applied to every search unless an agent overrides it
+#   provider: cohere       # cohere | voyage | cross-encoder
+#   top_n: 8
+
+collections:
+  docs:
+    description: Product documentation
+    sources:
+      - type: files
+        path: data
+        include: ["**/*.md", "**/*.pdf", "**/*.docx", "**/*.html", "**/*.txt"]
+      # - type: web
+      #   urls: [https://docs.example.com/]
+      #   max_pages: 200
+      # - type: github
+      #   repo: owner/name
+    chunking:
+      max_tokens: 400
+      overlap_tokens: 40
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  cors_origins: []

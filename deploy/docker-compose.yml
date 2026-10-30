@@ -1,0 +1,21 @@
+# Postgres with pgvector for `store.backend: postgres` and the postgres checkpointer.
+#   docker compose -f deploy/docker-compose.yml up -d
+#   database_url: postgresql://ragkit:ragkit@localhost:5433/ragkit
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ragkit
+      POSTGRES_PASSWORD: ragkit
+      POSTGRES_DB: ragkit
+    ports:
+      - "5433:5432"
+    volumes:
+      - ragkit-pg:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragkit"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  ragkit-pg:

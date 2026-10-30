@@ -1,0 +1,1 @@
+{"input": "INVOICE #A-1043 from Acme GmbH, dated 3 Oct 2026. 2 x Widget @ 40.00 EUR = 80.00. VAT 15.20. Total due: 95.20 EUR.", "reference": {"vendor": "Acme GmbH", "invoice_number": "A-1043", "invoice_date": "2026-10-03", "currency": "EUR", "total": 95.2}}

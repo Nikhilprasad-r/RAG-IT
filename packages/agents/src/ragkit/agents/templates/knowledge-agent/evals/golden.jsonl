@@ -1,0 +1,1 @@
+{"input": "Replace with a question that needs two facts from different documents", "expected_tools": ["search_knowledge"], "reference": "The combined answer, citing both sources."}

@@ -1,0 +1,1 @@
+{"input": "Replace with a question your data answers, e.g. How many orders were placed last month?", "expected_tools": ["list_tables", "describe_table", "run_query"], "reference": "The number, with the SQL used."}

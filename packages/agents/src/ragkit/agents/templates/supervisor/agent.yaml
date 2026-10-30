@@ -1,0 +1,19 @@
+# Supervisor: routes each request to specialist agents and combines their answers.
+# Every name under subagents must be an agent in this project; add them first, e.g.
+#   ragkit add agent knowledge-agent && ragkit add agent support-agent
+name: supervisor
+description: Routes requests to specialist agents and combines their answers.
+pattern: supervisor
+
+system_prompt: prompts/system.md
+
+subagents: [knowledge-agent, support-agent]
+
+memory:
+  checkpointer: memory
+
+budget:
+  max_steps: 8
+
+evals:
+  dataset: evals/golden.jsonl

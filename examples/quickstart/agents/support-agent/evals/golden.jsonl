@@ -1,0 +1,3 @@
+{"input": "Where is my order 1042?", "expected_tools": ["lookup_order"], "reference": "Order 1042 is shipped."}
+{"input": "Can you check the status of order A-77?", "expected_tools": ["lookup_order"], "reference": "Order A-77 is shipped."}
+{"input": "What are your opening hours?", "expected_tools": [], "reference": "The agent says it cannot answer and suggests contacting a human agent."}

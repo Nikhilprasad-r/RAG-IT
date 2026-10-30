@@ -1,0 +1,55 @@
+[project]
+name = "ragkit-workspace"
+version = "0.0.0"
+description = "Workspace root for the ragkit framework packages."
+requires-python = ">=3.12"
+dependencies = [
+    "ragkit-core",
+    "ragkit-retrieval[google,postgres]",
+    "ragkit-ingest",
+    "ragkit-agents[google,sql]",
+    "ragkit-server",
+    "ragkit-cli",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "ruff>=0.8",
+]
+# Heavy optional model dependencies (PyTorch). Install with `uv sync --group local-models`.
+local-models = [
+    "ragkit-ingest[docling]",
+    "ragkit-retrieval[local-rerank]",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+ragkit-core = { workspace = true }
+ragkit-retrieval = { workspace = true }
+ragkit-ingest = { workspace = true }
+ragkit-agents = { workspace = true }
+ragkit-server = { workspace = true }
+ragkit-cli = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ragkit", "conftest"]

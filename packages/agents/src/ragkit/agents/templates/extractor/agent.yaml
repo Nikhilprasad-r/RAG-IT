@@ -1,0 +1,17 @@
+# Extractor: turns unstructured text into a validated JSON object.
+# The structure is the Pydantic model named by output_schema; edit schema.py.
+name: extractor
+description: Extracts structured fields (an invoice by default) from text into validated JSON.
+pattern: react
+
+system_prompt: prompts/system.md
+output_schema: schema.py:Invoice
+
+memory:
+  checkpointer: memory
+
+budget:
+  max_steps: 3
+
+evals:
+  dataset: evals/golden.jsonl

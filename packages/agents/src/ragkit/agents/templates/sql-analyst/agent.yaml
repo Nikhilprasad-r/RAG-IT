@@ -1,0 +1,19 @@
+# SQL analyst: answers questions about a database by writing read-only SQL.
+# Set SQL_ANALYST_DATABASE_URL (SQLAlchemy URL) and use a read-only database user.
+name: sql-analyst
+description: Answers data questions by exploring the schema and running read-only SQL.
+pattern: react
+
+system_prompt: prompts/system.md
+
+tools:
+  local: [list_tables, describe_table, run_query]
+
+memory:
+  checkpointer: memory
+
+budget:
+  max_steps: 10
+
+evals:
+  dataset: evals/golden.jsonl

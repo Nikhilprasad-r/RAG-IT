@@ -1,0 +1,17 @@
+[project]
+name = "ragkit-core"
+version = "0.1.0"
+description = "Core types, plugin interfaces, registry and configuration for ragkit."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ragkit"]
