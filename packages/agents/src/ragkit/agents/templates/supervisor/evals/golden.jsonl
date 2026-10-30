@@ -1,1 +1,1 @@
-{"input": "Replace with a request that needs two specialists, e.g. What does the Pro plan include, and where is my order 1042?", "expected_tools": ["ask_knowledge_agent", "ask_support_agent"], "reference": "Both answers combined."}
+{"input": "Replace with a request that needs both specialists, e.g. Which plan has SSO, and how many Team-plan customers signed up last month?", "expected_tools": ["ask_knowledge_agent", "ask_sql_analyst"], "reference": "Both answers combined."}

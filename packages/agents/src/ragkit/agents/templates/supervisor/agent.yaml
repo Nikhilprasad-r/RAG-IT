@@ -1,13 +1,14 @@
 # Supervisor: routes each request to specialist agents and combines their answers.
 # Every name under subagents must be an agent in this project; add them first, e.g.
-#   ragkit add agent knowledge-agent && ragkit add agent support-agent
+#   ragkit add agent knowledge-agent && ragkit add agent sql-analyst
+# Agents that need human approval (hitl) cannot be sub-agents yet.
 name: supervisor
-description: Routes requests to specialist agents and combines their answers.
+description: Routes questions to a documents specialist and a data analyst, then combines their answers.
 pattern: supervisor
 
 system_prompt: prompts/system.md
 
-subagents: [knowledge-agent, support-agent]
+subagents: [knowledge-agent, sql-analyst]
 
 memory:
   checkpointer: memory

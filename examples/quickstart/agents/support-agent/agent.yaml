@@ -1,6 +1,6 @@
-# Support agent: answers customer questions and looks up orders with tools.
+# Support agent: answers customer questions, looks up orders and issues refunds.
 name: support-agent
-description: Customer support agent that answers questions and looks up order status.
+description: Customer support agent that looks up order status and issues refunds with human approval.
 pattern: react
 
 # Leave unset to use default_model from ragkit.yaml.
@@ -10,7 +10,14 @@ pattern: react
 system_prompt: prompts/system.md
 
 tools:
-  local: [lookup_order]
+  local: [lookup_order, issue_refund]
+  # mcp:                       # tools from servers under mcp_servers in ragkit.yaml
+  #   - server: tickets
+  #     allow: [create_ticket]
+
+hitl:
+  require_approval: [issue_refund]   # pauses until a person approves, edits or rejects
+  decisions: [approve, edit, reject]
 
 memory:
   checkpointer: memory  # use postgres when running more than one server process

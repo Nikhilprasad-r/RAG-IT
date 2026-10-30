@@ -18,9 +18,7 @@ async def test_rag_chat_answers_from_retrieved_context(rag_project: ProjectConfi
     model = FakeChatModel(messages=iter([AIMessage("Links expire after 30 minutes [1].")]))
 
     async with AgentRuntime(rag_project, model_factory=lambda _m: model) as runtime:
-        result = await runtime.get("rag-chat").ainvoke(
-            "How long does a password reset link last?"
-        )
+        result = await runtime.get("rag-chat").ainvoke("How long does a password reset link last?")
         reply = result.reply
 
     assert reply == "Links expire after 30 minutes [1]."

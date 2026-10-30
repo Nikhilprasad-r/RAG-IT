@@ -58,6 +58,7 @@ def tool_call(name: str, call_id: str = "call_1", **args: Any) -> AIMessage:
 
 
 def write_project(root: Path, config: str = "name: test\n") -> ProjectConfig:
+    root.mkdir(parents=True, exist_ok=True)
     (root / "ragkit.yaml").write_text(config)
     return ProjectConfig.load(root)
 

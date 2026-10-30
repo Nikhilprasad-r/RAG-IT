@@ -15,7 +15,7 @@ import json
 import logging
 import sys
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -212,6 +212,8 @@ class AgentRuntime:
     `model_factory` overrides how each agent's model is chosen; tests use it to
     inject fake chat models. `knowledge` is shared with the caller (the server
     passes its own); without it, one is opened when an agent uses retrieval.
+    `only` loads just those agents and their sub-agents (the CLI uses it so one
+    chat does not start every MCP server in the project).
     """
 
     def __init__(
@@ -220,10 +222,12 @@ class AgentRuntime:
         *,
         model_factory: ModelFactory | None = None,
         knowledge: KnowledgeBase | None = None,
+        only: Sequence[str] | None = None,
     ):
         self.project = project
         self._model_factory = model_factory
         self._knowledge = knowledge
+        self._only = only
         self._stack = AsyncExitStack()
         self.agents: dict[str, Agent] = {}
 
@@ -242,10 +246,17 @@ class AgentRuntime:
         _check_collections(by_path, self.project)
         paths = {manifest.name: path for path, manifest in by_path.items()}
         manifests = {manifest.name: manifest for manifest in by_path.values()}
+        if self._only is not None:
+            manifests = _with_subagents(manifests, self._only)
         order = build_order(manifests)
+        schemas = {name: _load_output_schema(paths[name], m) for name, m in manifests.items()}
 
         savers = await self._stack.enter_async_context(
-            open_checkpointers(self.project, {m.memory.checkpointer for m in manifests.values()})
+            open_checkpointers(
+                self.project,
+                {m.memory.checkpointer for m in manifests.values()},
+                allowed_types=_state_types(schemas.values()),
+            )
         )
         knowledge = self._knowledge
         if knowledge is None and any(m.retrieval for m in manifests.values()):
@@ -269,6 +280,7 @@ class AgentRuntime:
                 model=self._model_factory(manifest) if self._model_factory else None,
                 knowledge=knowledge,
                 extra_tools=extra,
+                output_schema=schemas[name],
             )
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -298,6 +310,7 @@ def build_agent(
     model: str | BaseChatModel | None = None,
     knowledge: KnowledgeBase | None = None,
     extra_tools: Sequence[BaseTool] = (),
+    output_schema: type[BaseModel] | None = None,
 ) -> Agent:
     for feature in manifest.unwired_features():
         logger.warning("Agent %r declares %s, which is not wired yet.", manifest.name, feature)
@@ -331,7 +344,7 @@ def build_agent(
         tools=tools,
         system_prompt=_read_prompt(path, manifest),
         middleware=middleware,
-        response_format=_load_output_schema(path, manifest),
+        response_format=output_schema or _load_output_schema(path, manifest),
         checkpointer=checkpointer,
         name=manifest.name,
     )
@@ -377,6 +390,41 @@ def _check_collections(manifests: dict[Path, AgentManifest], project: ProjectCon
                     f"Agent {manifest.name!r} searches collection {collection!r}, which is not "
                     f"defined under collections in ragkit.yaml."
                 )
+
+
+def _with_subagents(
+    manifests: dict[str, AgentManifest], names: Sequence[str]
+) -> dict[str, AgentManifest]:
+    selected: dict[str, AgentManifest] = {}
+    pending = list(names)
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        if name not in manifests:
+            available = ", ".join(sorted(manifests)) or "none"
+            raise AgentNotFoundError(f"No agent named {name!r}. Available: {available}.")
+        selected[name] = manifests[name]
+        pending += [child for child in manifests[name].subagents if child in manifests]
+    # Unknown sub-agent names stay in the manifests so build_order reports them.
+    return selected
+
+
+def _state_types(schemas: Iterable[type[BaseModel] | None]) -> list[tuple[str, str]]:
+    """(module, class) of every model defined next to an output schema."""
+    types = []
+    for schema in schemas:
+        if schema is None:
+            continue
+        module = sys.modules[schema.__module__]
+        types += [
+            (value.__module__, value.__name__)
+            for value in vars(module).values()
+            if isinstance(value, type)
+            and issubclass(value, BaseModel)
+            and value.__module__ == module.__name__
+        ]
+    return types
 
 
 def _check_tool_names(manifest: AgentManifest, tools: Sequence[Any]) -> None:

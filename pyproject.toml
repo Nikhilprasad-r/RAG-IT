@@ -7,7 +7,7 @@ dependencies = [
     "ragkit-core",
     "ragkit-retrieval[google,postgres]",
     "ragkit-ingest",
-    "ragkit-agents[google,sql]",
+    "ragkit-agents[google,sql,postgres]",
     "ragkit-server",
     "ragkit-cli",
 ]

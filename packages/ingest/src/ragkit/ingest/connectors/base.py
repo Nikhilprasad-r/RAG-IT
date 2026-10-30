@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import mimetypes
+import os
 import re
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
@@ -8,6 +9,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ragkit.core.config import SourceConfig
@@ -88,6 +90,31 @@ async def bounded_map[T, R](
     finally:
         for task in tasks:
             task.cancel()
+
+
+async def request_with_retry(
+    client: httpx.AsyncClient, method: str, url: str, *, attempts: int = 5, **kwargs: Any
+) -> httpx.Response:
+    """Send a request, waiting and retrying on 429 and 5xx (honouring Retry-After)."""
+    delay = 1.0
+    for attempt in range(1, attempts + 1):
+        response = await client.request(method, url, **kwargs)
+        if response.status_code != 429 and response.status_code < 500:
+            return response
+        if attempt == attempts:
+            break
+        retry_after = response.headers.get("retry-after", "")
+        wait = float(retry_after) if retry_after.replace(".", "", 1).isdigit() else delay
+        await asyncio.sleep(min(wait, 60))
+        delay *= 2
+    return response
+
+
+def secret(env: str, *, purpose: str) -> str:
+    value = os.environ.get(env)
+    if not value:
+        raise ConfigError(f"Set {env} to {purpose}.")
+    return value
 
 
 def create_connector(source: SourceConfig, *, root: Path) -> Connector:

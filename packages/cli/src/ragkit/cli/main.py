@@ -23,6 +23,7 @@ from ragkit.agents import (
 )
 from ragkit.agents.manifest import MANIFEST_FILENAME
 from ragkit.agents.runtime import new_thread_id
+from ragkit.agents.templates import is_builtin
 from ragkit.core.config import CONFIG_FILENAME, DEFAULT_MODEL, ProjectConfig
 from ragkit.core.errors import ConfigError, RagkitError
 from ragkit.core.types import ScoredChunk
@@ -136,7 +137,13 @@ def templates() -> None:
 
 @add_app.command("agent")
 def add_agent_command(
-    template: Annotated[str, typer.Argument(help="Template name; see `ragkit templates`.")],
+    template: Annotated[
+        str,
+        typer.Argument(
+            help="Built-in name (see `ragkit templates`), a local folder, or "
+            "gh:owner/repo/path[@ref]."
+        ),
+    ],
     name: Annotated[str | None, typer.Option(help="Name for the new agent.")] = None,
     force: Annotated[bool, typer.Option(help="Overwrite an existing agent folder.")] = False,
 ) -> None:
@@ -145,6 +152,12 @@ def add_agent_command(
         project = ProjectConfig.load()
         dest = add_agent(template, project.agents_path, name=name, force=force)
         console.print(f"[green]Added {dest.relative_to(project.root)}[/green]")
+        code = sorted(str(p.relative_to(dest)) for p in dest.rglob("*.py"))
+        if not is_builtin(template) and code:
+            console.print(
+                f"[yellow]Review {', '.join(code)} before running this agent: "
+                "the code comes from outside ragkit and runs with your permissions.[/yellow]"
+            )
 
 
 @app.command()
@@ -174,7 +187,7 @@ def chat(
 
 
 async def _chat(project: ProjectConfig, name: str, message: str, thread_id: str | None) -> None:
-    async with AgentRuntime(project) as runtime:
+    async with AgentRuntime(project, only=[name]) as runtime:
         agent = runtime.get(name)
         thread_id = thread_id or new_thread_id()
         if agent.manifest.output_schema:

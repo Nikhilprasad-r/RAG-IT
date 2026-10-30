@@ -5,10 +5,11 @@ your data sources, it ingests them incrementally into a hybrid (vector +
 keyword) index, and you copy in agent templates that search that index. Agents
 and search are served over HTTP.
 
-> Status: **M1 (ingestion and retrieval)**. M0 delivered the workspace, agent
-> runtime, server and CLI. M1 adds connectors, parsers, chunking, incremental
-> ingestion, SQLite and Postgres (pgvector) stores, hybrid search with RRF,
-> rerankers, and the `rag-chat` and `knowledge-agent` templates.
+> Status: **M2 (agents)**. M0 delivered the workspace, runtime, server and CLI;
+> M1 ingestion, hybrid search and reranking. M2 adds MCP tools, human approval,
+> structured output, multi-agent supervisors, the `sql-analyst`, `extractor` and
+> `supervisor` templates, templates from GitHub or local folders, and Confluence
+> and Notion connectors.
 
 ## Quickstart
 
@@ -56,14 +57,19 @@ collections:
         max_pages: 200
       - type: github
         repo: owner/name
-      - type: my_connectors:NotionSource   # your own class, imported from the project
-        database_id: abc123
+      - type: confluence                   # CONFLUENCE_EMAIL + CONFLUENCE_API_TOKEN
+        base_url: https://acme.atlassian.net/wiki
+        spaces: [ENG]
+      - type: notion                       # NOTION_TOKEN; pages shared with the integration
+        database_ids: [abc123]
+      - type: my_connectors:CrmSource      # your own class, imported from the project
+        region: eu
     chunking: { max_tokens: 400, overlap_tokens: 40 }
 ```
 
 | Stage | What it does |
 |---|---|
-| Connectors | `files` (local folders), `web` (breadth-first crawl, robots.txt, same-site scope), `github` (repo files through the API), or any `module:Class` with a `name` and an async `fetch()` |
+| Connectors | `files` (local folders), `web` (breadth-first crawl, robots.txt, same-site scope), `github` (repo files through the API), `confluence` (Cloud v2 API, spaces), `notion` (databases, page trees or everything shared, converted to Markdown), or any `module:Class` with a `name` and an async `fetch()`. Hosted connectors retry on rate limits |
 | Parsers | Text, Markdown, code, HTML, PDF (with page numbers), DOCX, CSV and JSON built in. `parser: docling` adds layout-aware PDF (tables, page numbers), PPTX, XLSX and image OCR (`ragkit-ingest[docling]`). Docling loads its models in about 10 s per process, then converts about 1.5 s per PDF page on a laptop; office formats are near-instant |
 | Chunking | Splits along headings, packs paragraphs up to `max_tokens`, and records the heading path and page. A title and section header is indexed with each chunk |
 | Incremental sync | Unchanged items (same content hash) are skipped. Items removed from a source are deleted, but only when the source listed completely, so an outage never empties a collection. Failures are reported per item |
@@ -80,18 +86,52 @@ Each agent is a folder under `agents/`, copied from a template:
 |---|---|---|
 | `rag-chat` | single-pass RAG | Retrieves once per message and answers with numbered citations. Cheapest and fastest |
 | `knowledge-agent` | agentic retrieval | Gets a `search_knowledge` tool and searches as often as it needs. For multi-step questions |
-| `support-agent` | ReAct + tools | Tool-calling support agent (order lookup example) |
+| `support-agent` | tools + approval | Looks up orders; refunds pause until a person approves, edits or rejects them |
+| `sql-analyst` | tools | Explores a schema and answers with read-only SQL (`SQL_ANALYST_DATABASE_URL`) |
+| `extractor` | structured output | Returns a validated Pydantic object (an invoice by default) |
+| `supervisor` | multi-agent | Delegates to other agents (`ask_<name>` tools) and combines their answers |
 
-The runtime acts on these manifest fields: `model`, `fallback_models`,
-`system_prompt`, `retrieval`, `tools.local`, `memory.checkpointer` and
-`budget.max_steps`. `tools.mcp`, `guardrails` and `hitl` are in the schema but
-are not acted on yet; if an agent declares them, the runtime logs a warning.
+`ragkit add agent` also installs templates from a folder or GitHub
+(`gh:owner/repo/path@ref` or a github.com tree URL). Python from those
+templates runs with your permissions, so the CLI asks you to review it.
+
+```yaml
+# agent.yaml (excerpt)
+tools:
+  local: [lookup_order, issue_refund]       # functions in tools.py
+  mcp:
+    - server: tickets                       # defined under mcp_servers in ragkit.yaml
+      allow: [create_ticket]                # empty = every tool the server offers
+hitl:
+  require_approval: [issue_refund, create_ticket]
+  decisions: [approve, edit, reject]
+subagents: [knowledge-agent]                # becomes an ask_knowledge_agent tool
+output_schema: schema.py:Invoice            # Pydantic model in the agent folder
+```
+
+```yaml
+# ragkit.yaml
+mcp_servers:
+  tickets:
+    transport: http                         # stdio | http | sse | websocket
+    url: https://mcp.example.com/mcp
+    headers: {Authorization: "Bearer ${TICKETS_TOKEN}"}
+  files:
+    command: npx                            # stdio is the default transport
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "./data"]
+```
+
+MCP sessions open once per process and stay open. `ragkit chat` loads only the
+agent you talk to and its sub-agents. Agents that need approval cannot be
+sub-agents yet. `guardrails`, `memory.long_term` and `budget.max_cost_usd` are in
+the schema but not acted on yet; the runtime logs a warning when they are set.
 
 ## HTTP API
 
 | Endpoint | |
 |---|---|
-| `GET /agents`, `POST /agents/{name}/chat`, `POST /agents/{name}/stream` (SSE) | Agents |
+| `GET /agents`, `POST /agents/{name}/chat`, `POST /agents/{name}/stream` (SSE) | Agents. Replies carry `status` (`completed` or `waiting_for_approval`), `pending` actions and `structured` output |
+| `POST /agents/{name}/resume`, `POST /agents/{name}/resume/stream` | Continue with `{"thread_id", "decisions": [{"type": "approve" \| "edit" \| "reject", "args", "message"}]}`, one per pending action. A thread that is waiting rejects new messages with 409 |
 | `GET /collections`, `POST /collections/{name}/search` | Search with `query`, `top_k`, `mode`, `filters`, `rerank` |
 
 ## Layout
@@ -101,7 +141,7 @@ are not acted on yet; if an agent declares them, the runtime logs a warning.
 | `packages/core` | `ragkit.core` | Types, plugin protocols, registry, `ragkit.yaml` config |
 | `packages/retrieval` | `ragkit.retrieval` | Embedders, SQLite and Postgres stores, hybrid search, rerankers, `KnowledgeBase` |
 | `packages/ingest` | `ragkit.ingest` | Connectors, parsers, chunker, incremental pipeline |
-| `packages/agents` | `ragkit.agents` | Manifest schema, LangGraph runtime, retrieval wiring, templates |
+| `packages/agents` | `ragkit.agents` | Manifest schema, LangGraph runtime, MCP, approvals, sub-agents, retrieval wiring, templates |
 | `packages/server` | `ragkit.server` | FastAPI gateway |
 | `packages/cli` | `ragkit.cli` | `init`, `ingest`, `search`, `collections`, `templates`, `add agent`, `agents`, `chat`, `serve` |
 
@@ -123,7 +163,7 @@ A plain `uv sync` removes them again; their tests are skipped when they are miss
 ```bash
 uv run pytest
 docker compose -f deploy/docker-compose.yml up -d
-RAGKIT_TEST_DATABASE_URL=postgresql://ragkit:ragkit@localhost:5433/ragkit uv run pytest tests/test_stores.py
+RAGKIT_TEST_DATABASE_URL=postgresql://ragkit:ragkit@localhost:5433/ragkit uv run pytest
 uv run ruff check packages tests && uv run ruff format packages tests
 ```
 
@@ -133,6 +173,6 @@ uv run ruff check packages tests && uv run ruff format packages tests
 |---|---|
 | M0 Foundation (done) | Workspace, core interfaces, config, CLI, runtime, server, `support-agent` |
 | M1 Ingestion (done) | Connectors (files, web, GitHub, custom), parsers, chunking, incremental sync, SQLite and pgvector stores, hybrid search, rerankers, RAG templates |
-| M2 Agents | MCP tools, human approval, more templates (SQL analyst, extractor, supervisor), templates from git, Confluence and Notion connectors |
+| M2 Agents (done) | MCP tools, human approval, structured output, supervisors, SQL analyst / extractor / supervisor templates, templates from GitHub and folders, Confluence and Notion connectors, verified Postgres checkpointer |
 | M3 Harness | OpenTelemetry GenAI tracing, Langfuse, `ragkit eval` with CI gate, guardrails |
 | M4 Scale | Queue-based ingestion workers, scheduled syncs, Helm + KEDA, multi-tenancy and auth, caching |

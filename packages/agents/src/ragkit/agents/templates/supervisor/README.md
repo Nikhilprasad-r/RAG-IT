@@ -6,9 +6,9 @@ self-contained task, and merges the answers.
 
 ```bash
 ragkit add agent knowledge-agent
-ragkit add agent support-agent
+ragkit add agent sql-analyst
 ragkit add agent supervisor
-ragkit chat supervisor "What does the Pro plan include, and where is my order 1042?"
+ragkit chat supervisor "Which plan has SSO, and how many Team-plan customers signed up last month?"
 ```
 
 How it behaves:
@@ -17,4 +17,5 @@ How it behaves:
   follow-up delegations have context.
 - Only the supervisor's own reply is streamed; sub-agent output reaches it as tool results.
 - Supervisors can delegate to other supervisors; cycles are rejected at start-up.
-- Sub-agents that need human approval are not supported yet.
+- Agents that need human approval (`hitl`) cannot be sub-agents yet; start-up fails with
+  a clear error if one is listed.

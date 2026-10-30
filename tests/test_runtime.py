@@ -63,9 +63,9 @@ async def test_unknown_agent_is_reported(project: ProjectConfig) -> None:
 
 async def test_tool_listed_but_not_defined_is_an_error(project: ProjectConfig) -> None:
     manifest = project.agents_path / "support-agent" / "agent.yaml"
-    manifest.write_text(manifest.read_text().replace("[lookup_order]", "[lookup_order, refund]"))
+    manifest.write_text(manifest.read_text().replace("issue_refund]", "issue_refund, refund]"))
 
-    with pytest.raises(ConfigError, match="refund"):
+    with pytest.raises(ConfigError, match="not defined in tools.py: refund"):
         async with AgentRuntime(project, model_factory=fake_models()):
             pass
 

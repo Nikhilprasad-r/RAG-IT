@@ -3107,7 +3107,7 @@ name = "ragkit-workspace"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "ragkit-agents", extra = ["google", "sql"] },
+    { name = "ragkit-agents", extra = ["google", "postgres", "sql"] },
     { name = "ragkit-cli" },
     { name = "ragkit-core" },
     { name = "ragkit-ingest" },
@@ -3129,7 +3129,7 @@ local-models = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ragkit-agents", extras = ["google", "sql"], editable = "packages/agents" },
+    { name = "ragkit-agents", extras = ["google", "sql", "postgres"], editable = "packages/agents" },
     { name = "ragkit-cli", editable = "packages/cli" },
     { name = "ragkit-core", editable = "packages/core" },
     { name = "ragkit-ingest", editable = "packages/ingest" },

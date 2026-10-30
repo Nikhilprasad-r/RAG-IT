@@ -29,7 +29,9 @@ from ragkit.core.errors import ConfigError, RagkitError
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 _NAME_LINE = re.compile(r"^name:.*$", re.MULTILINE)
-_GH_SHORT = re.compile(r"^gh:(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)(?P<path>/[^@]*)?(?:@(?P<ref>.+))?$")
+_GH_SHORT = re.compile(
+    r"^gh:(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)(?P<path>/[^@]*)?(?:@(?P<ref>.+))?$"
+)
 _GH_URL = re.compile(
     r"^https://github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?"
     r"(?:/tree/(?P<ref>[^/]+)(?P<path>/.*)?)?/?$"
@@ -159,9 +161,7 @@ def _install(source: Path, agents_dir: Path, name: str | None, force: bool) -> P
         if not force:
             raise ConfigError(f"{dest} already exists. Pass force=True to overwrite it.")
         shutil.rmtree(dest)
-    shutil.copytree(
-        source, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git")
-    )
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
 
     manifest_path = dest / MANIFEST_FILENAME
     manifest_path.write_text(
