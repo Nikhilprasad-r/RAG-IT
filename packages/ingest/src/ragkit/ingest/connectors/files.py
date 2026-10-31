@@ -15,9 +15,13 @@ from ragkit.ingest.connectors.base import ConnectorOptions, glob_match, guess_mi
 class FilesOptions(ConnectorOptions):
     path: str = Field(description="Directory to read, relative to the project root.")
     include: list[str] = Field(default_factory=lambda: ["**/*"])
+    """Globs of files to read; `**` matches any folders."""
     exclude: list[str] = Field(default_factory=list)
+    """Globs of files to skip."""
     include_hidden: bool = False
+    """Also read files and folders whose names start with a dot."""
     max_file_mb: float = Field(default=50, gt=0)
+    """Skip files larger than this."""
 
 
 class FilesConnector:

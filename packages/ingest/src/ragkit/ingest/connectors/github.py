@@ -34,12 +34,19 @@ class GitHubOptions(ConnectorOptions):
     include: list[str] = Field(
         default_factory=lambda: ["**/*.md", "**/*.mdx", "**/*.rst", "**/*.txt"]
     )
+    """Globs of files to read."""
     exclude: list[str] = Field(default_factory=list)
+    """Globs of files to skip."""
     token_env: str = "GITHUB_TOKEN"
+    """Variable with a GitHub token; optional for public repositories."""
     max_file_mb: float = Field(default=5, gt=0)
+    """Skip files larger than this."""
     concurrency: int = Field(default=8, ge=1)
+    """Files downloaded at once."""
     api_url: str = "https://api.github.com"
+    """GitHub API URL (change for GitHub Enterprise)."""
     raw_url: str = "https://raw.githubusercontent.com"
+    """Host that serves raw file contents."""
 
 
 class GitHubConnector:

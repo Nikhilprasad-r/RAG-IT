@@ -73,21 +73,27 @@ INJECTION_PATTERNS = [
 
 
 class _Spec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", use_attribute_docstrings=True)
 
 
 class PiiGuardrail(_Spec):
     type: Literal["pii"]
+    """Guardrail kind."""
     kinds: list[str] = Field(
         default_factory=lambda: ["email", "credit_card", "ip", "phone", "iban"]
     )
+    """What to detect: email, credit_card, ip, mac_address, url, phone, iban, or names defined in
+    `patterns`.
+    """
     patterns: dict[str, str] = Field(
         default_factory=dict, description="Extra kinds as name: regex."
     )
     strategy: Literal["redact", "mask", "hash"] = "redact"
+    """`redact` ([REDACTED_EMAIL]), `mask` (jo.doe@****.com) or `hash` (<email_hash:…>)."""
     apply_to: list[Literal["input", "output", "tool_results"]] = Field(
         default_factory=lambda: ["input", "output"]
     )
+    """Where to look: user messages, model replies, tool results."""
 
     @field_validator("patterns")
     @classmethod
@@ -109,7 +115,9 @@ class PiiGuardrail(_Spec):
 
 class InjectionGuardrail(_Spec):
     type: Literal["prompt_injection"]
+    """Guardrail kind."""
     action: Literal["annotate", "drop"] = "annotate"
+    """`annotate` marks flagged content as untrusted data; `drop` removes it."""
     patterns: list[str] = Field(default_factory=list, description="Extra regexes to flag.")
 
     @field_validator("patterns")
@@ -122,8 +130,10 @@ class InjectionGuardrail(_Spec):
 
 class DenyGuardrail(_Spec):
     type: Literal["deny"]
+    """Guardrail kind."""
     patterns: list[str] = Field(min_length=1, description="Case-insensitive regexes.")
     message: str = "Sorry, I can't help with that request."
+    """Reply sent instead of calling the model."""
 
     @field_validator("patterns")
     @classmethod

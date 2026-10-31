@@ -26,11 +26,17 @@ MAX_DEPTH = 8
 
 class NotionOptions(ConnectorOptions):
     database_ids: list[str] = Field(default_factory=list)
+    """Databases whose pages to ingest."""
     page_ids: list[str] = Field(default_factory=list)
+    """Pages to ingest, with the pages beneath them."""
     include_child_pages: bool = True
+    """Also ingest pages nested under ingested pages."""
     token_env: str = "NOTION_TOKEN"
+    """Variable with the integration token."""
     api_url: str = "https://api.notion.com"
+    """Notion API URL."""
     notion_version: str = "2022-06-28"
+    """Value of the Notion-Version header."""
     concurrency: int = Field(default=3, ge=1, description="Notion allows about 3 requests/s.")
 
 
