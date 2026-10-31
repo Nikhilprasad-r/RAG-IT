@@ -21,6 +21,10 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.8",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
 # Heavy optional model dependencies (PyTorch). Install with `uv sync --group local-models`.
 local-models = [
     "ragkit-ingest[docling]",
