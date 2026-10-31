@@ -1,6 +1,8 @@
 import asyncio
+import contextlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from importlib.metadata import version
@@ -36,6 +38,7 @@ from ragkit.evals import (
     evaluate_search,
     load_cases,
 )
+from ragkit.ingest import Job, Worker, create_queue
 from ragkit.ingest import ingest as run_ingest
 from ragkit.observe import configure_tracing
 from ragkit.retrieval import CollectionStats, KnowledgeBase, create_store
@@ -271,12 +274,20 @@ def ingest(
     full: Annotated[
         bool, typer.Option(help="Re-process every item, not just changed ones.")
     ] = False,
+    queue: Annotated[
+        bool, typer.Option("--queue", help="Queue jobs for `ragkit worker` instead of running.")
+    ] = False,
 ) -> None:
     """Fetch, parse, chunk, embed and index the configured sources."""
     with _errors():
         project = _load_project()
         if not project.collections:
             raise ConfigError("No collections are defined in ragkit.yaml.")
+        if queue:
+            jobs = asyncio.run(_enqueue(project, collections or list(project.collections), full))
+            for job in jobs:
+                console.print(f"queued {job.collection}: job {job.id}")
+            return
         with console.status("Ingesting..."):
             reports = asyncio.run(run_ingest(project, collections, full=full))
     table = Table(
@@ -516,11 +527,121 @@ def _finish_evals(
         raise typer.Exit(1)
 
 
+async def _enqueue(project: ProjectConfig, names: list[str], full: bool) -> list[Job]:
+    for name in names:
+        project.collection(name)
+    async with create_queue(project) as jobs:
+        return [await jobs.enqueue(name, full=full, requested_by="cli") for name in names]
+
+
+@app.command()
+def worker(
+    concurrency: Annotated[int, typer.Option(help="Jobs to run at once.")] = 1,
+    schedule: Annotated[
+        bool, typer.Option(help="Also queue collections whose sync_every has elapsed.")
+    ] = True,
+    until_idle: Annotated[
+        bool, typer.Option("--until-idle", help="Exit when the queue is empty.")
+    ] = False,
+) -> None:
+    """Run queued ingestion jobs until stopped (SIGTERM finishes running jobs first)."""
+    with _errors():
+        project = _load_project()
+        asyncio.run(_worker(project, concurrency, schedule, until_idle))
+
+
+async def _worker(
+    project: ProjectConfig, concurrency: int, schedule: bool, until_idle: bool
+) -> None:
+    import signal
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stop.set)
+    async with create_queue(project) as jobs, create_store(project) as store:
+        runner = Worker(project, jobs, store, concurrency=concurrency, schedule=schedule)
+        console.print(f"worker {runner.name} started (concurrency {concurrency})")
+        await runner.run(stop, until_idle=until_idle)
+        for job in runner.completed:
+            console.print(
+                f"{job.collection}: {job.status}" + (f" ({job.error})" if job.error else "")
+            )
+
+
+@app.command()
+def scheduler(
+    every: Annotated[float, typer.Option(help="Seconds between checks.")] = 60,
+) -> None:
+    """Queue collections whose sync_every has elapsed, until stopped.
+
+    Run one of these when workers scale to zero; otherwise `ragkit worker`
+    schedules by itself.
+    """
+    with _errors():
+        project = _load_project()
+        asyncio.run(_scheduler(project, every))
+
+
+async def _scheduler(project: ProjectConfig, every: float) -> None:
+    import signal
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stop.set)
+    async with create_queue(project) as jobs, create_store(project) as store:
+        runner = Worker(project, jobs, store, concurrency=0, schedule=True)
+        console.print("scheduler started")
+        while not stop.is_set():
+            for job in await runner.enqueue_due():
+                console.print(f"queued {job.collection}: job {job.id}")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), every)
+
+
+@app.command()
+def jobs(
+    collection: Annotated[str | None, typer.Option(help="Only this collection.")] = None,
+    limit: Annotated[int, typer.Option(help="How many to show.")] = 20,
+) -> None:
+    """List recent ingestion jobs."""
+    with _errors():
+        project = _load_project()
+        rows = asyncio.run(_list_jobs(project, collection, limit))
+    table = Table("Job", "Collection", "Status", "Attempts", "Requested", "By", "Result")
+    for job in rows:
+        result = job.error or (
+            f"+{job.report['added']} ~{job.report['updated']} -{job.report['deleted']}"
+            if job.report
+            else ""
+        )
+        requested = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(job.requested_at))
+        table.add_row(
+            job.id[:12],
+            job.collection,
+            job.status,
+            str(job.attempts),
+            requested,
+            job.requested_by or "",
+            result,
+        )
+    console.print(table)
+
+
+async def _list_jobs(project: ProjectConfig, collection: str | None, limit: int) -> list[Job]:
+    async with create_queue(project) as queue:
+        return await queue.list(collection=collection, limit=limit)
+
+
 @app.command()
 def serve(
     host: Annotated[str | None, typer.Option(help="Defaults to server.host.")] = None,
     port: Annotated[int | None, typer.Option(help="Defaults to server.port.")] = None,
     reload: Annotated[bool, typer.Option(help="Restart on code changes.")] = False,
+    workers: Annotated[
+        int, typer.Option(help="Server processes; use the postgres checkpointer with more than 1.")
+    ] = 1,
 ) -> None:
     """Serve this project's agents over HTTP."""
     import uvicorn
@@ -533,6 +654,8 @@ def serve(
         host=host or project.server.host,
         port=port or project.server.port,
         reload=reload,
+        workers=workers,
+        proxy_headers=True,
     )
 
 

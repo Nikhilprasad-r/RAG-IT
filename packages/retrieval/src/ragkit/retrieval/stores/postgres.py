@@ -6,7 +6,8 @@ collections can use embedding models of different sizes.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from typing import Any
 
 from ragkit.core.errors import ConfigError
@@ -18,6 +19,21 @@ try:
     from psycopg_pool import AsyncConnectionPool
 except ImportError:  # pragma: no cover - exercised only without the extra installed
     AsyncConnectionPool = None  # type: ignore[assignment,misc]
+
+# Session-level advisory lock taken while creating tables. Concurrent
+# `CREATE ... IF NOT EXISTS` from several pods starting at once can still collide
+# in the catalog, so schema setup runs one process at a time.
+SCHEMA_LOCK_KEY = 0x7261676B  # "ragk"
+
+
+@asynccontextmanager
+async def schema_lock(conn: Any) -> AsyncIterator[None]:
+    await conn.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_KEY,))
+    try:
+        yield
+    finally:
+        await conn.execute("SELECT pg_advisory_unlock(%s)", (SCHEMA_LOCK_KEY,))
+
 
 # pgvector's HNSW index supports up to 2,000 dimensions for `vector` and 4,000 for `halfvec`.
 _MAX_VECTOR_DIMS = 2000
@@ -82,7 +98,7 @@ class PostgresStore(Store):
 
     async def open(self) -> None:
         await self._pool.open(wait=True)
-        async with self._pool.connection() as conn:
+        async with self._pool.connection() as conn, schema_lock(conn):
             await conn.execute(_SCHEMA)
             row = await (
                 await conn.execute("SELECT extversion FROM pg_extension WHERE extname = 'vector'")

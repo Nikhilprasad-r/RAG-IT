@@ -5,11 +5,12 @@ your data sources, it ingests them incrementally into a hybrid (vector +
 keyword) index, and you copy in agent templates that search that index. Agents
 and search are served over HTTP.
 
-> Status: **M3 (harness)**. M0 delivered the workspace, runtime, server and CLI;
+> Status: **M4 (scale)**. M0 delivered the workspace, runtime, server and CLI;
 > M1 ingestion, hybrid search and reranking; M2 MCP tools, human approval,
-> structured output and multi-agent supervisors. M3 adds OpenTelemetry GenAI
-> tracing (Langfuse, Phoenix, any OTLP backend), token and cost accounting with
-> cost budgets, `ragkit eval` for agents and search with CI gates, and guardrails.
+> structured output and supervisors; M3 tracing, cost budgets, evals and
+> guardrails. M4 adds API keys and JWT auth with tenant isolation, a durable job
+> queue with ingestion workers and scheduled syncs, query and result caching,
+> and deployment: a container image, a Compose stack and a Helm chart with KEDA.
 
 ## Quickstart
 
@@ -202,6 +203,34 @@ per search mode. Reports are written to `.ragkit/evals/`.
 - run: uv run ragkit eval search docs evals/search.jsonl --gate hit_rate=0.9
 ```
 
+## Running at scale
+
+`examples/production` is the reference layout: Postgres holds the index, the job
+queue and agent memory, so API replicas and workers are stateless.
+
+| Piece | How |
+|---|---|
+| Auth | `auth.mode: api_key` (keys from env vars, each with a tenant, principals and scopes) or `jwt` (HS256 secret or a JWKS URL; tenant, groups and scopes from claims). Scopes: `chat`, `search`, `ingest`, `admin`. Optional per-caller `rate_limit_per_minute` |
+| Tenants | A collection's documents belong to its `tenant`; callers only search their own tenant's collections plus `shared: true` ones, filtered by ACL principals. Agent searches run as the caller. Conversation threads are private to each tenant and user |
+| Ingestion jobs | `POST /collections/{name}/ingest` or `ragkit ingest --queue` queues a job; `ragkit worker` runs jobs with renewed leases (a crashed worker's job is retried, up to `queue.max_attempts`), one job per collection at a time, and finishes running jobs on SIGTERM. Requests for an already-queued collection are merged |
+| Scheduled syncs | `sync_every: 6h` on a collection; `ragkit scheduler` (or workers without `--no-schedule`) queues it when due |
+| Caching | Query embeddings (LRU, on by default); identical search results for `cache.search_ttl_seconds` (off by default). Keys include tenant and principals |
+| Probes | `GET /health` (liveness), `GET /ready` (agents loaded, store reachable) |
+
+```bash
+docker build -f deploy/Dockerfile --build-arg PROJECT=examples/production -t ragkit-app .
+cp examples/production/.env.example deploy/compose/.env   # fill in keys
+docker compose -f deploy/compose/docker-compose.yml up -d  # Postgres, 2 APIs, 2 workers, scheduler, gateway
+helm install app deploy/helm/ragkit --set image.repository=ghcr.io/you/ragkit-app
+```
+
+The Helm chart deploys the API (HPA, PDB, probes, optional Ingress), workers
+scaled by KEDA on queued and running jobs (down to zero), and one scheduler. Pods
+run as non-root with a read-only root filesystem. Secrets come from
+`existingSecret`: `DATABASE_URL`, model keys, the API key variables, and
+`KEDA_POSTGRES_CONNECTION` for KEDA. Schema setup is serialised with a Postgres
+advisory lock, so many pods can start at once.
+
 ## HTTP API
 
 | Endpoint | |
@@ -209,6 +238,10 @@ per search mode. Reports are written to `.ragkit/evals/`.
 | `GET /agents`, `POST /agents/{name}/chat`, `POST /agents/{name}/stream` (SSE) | Agents. Replies carry `status` (`completed` or `waiting_for_approval`), `pending` actions, `structured` output and `usage` (tokens, cost, guardrails) |
 | `POST /agents/{name}/resume`, `POST /agents/{name}/resume/stream` | Continue with `{"thread_id", "decisions": [{"type": "approve" \| "edit" \| "reject", "args", "message"}]}`, one per pending action. A thread that is waiting rejects new messages with 409 |
 | `GET /collections`, `POST /collections/{name}/search` | Search with `query`, `top_k`, `mode`, `filters`, `rerank` |
+| `POST /collections/{name}/ingest`, `GET /jobs`, `GET /jobs/{id}` | Queue ingestion and follow jobs (`ingest` scope) |
+| `GET /health`, `GET /ready` | Liveness and readiness |
+
+Send `Authorization: Bearer <key or JWT>` (or `X-API-Key: <key>`) when `auth.mode` is not `none`.
 
 ## Layout
 
@@ -216,12 +249,13 @@ per search mode. Reports are written to `.ragkit/evals/`.
 |---|---|---|
 | `packages/core` | `ragkit.core` | Types, plugin protocols, registry, `ragkit.yaml` config |
 | `packages/retrieval` | `ragkit.retrieval` | Embedders, SQLite and Postgres stores, hybrid search, rerankers, `KnowledgeBase` |
-| `packages/ingest` | `ragkit.ingest` | Connectors, parsers, chunker, incremental pipeline |
+| `packages/ingest` | `ragkit.ingest` | Connectors, parsers, chunker, incremental pipeline, job queue, workers |
 | `packages/agents` | `ragkit.agents` | Manifest schema, LangGraph runtime, MCP, approvals, sub-agents, guardrails, telemetry, templates |
 | `packages/observe` | `ragkit.observe` | Tracing exporters (Langfuse, Phoenix, OTLP, console) |
 | `packages/evals` | `ragkit.evals` | Agent and search evals, LLM judge, gates |
-| `packages/server` | `ragkit.server` | FastAPI gateway |
-| `packages/cli` | `ragkit.cli` | `init`, `ingest`, `search`, `collections`, `templates`, `add agent`, `agents`, `chat`, `eval`, `serve` |
+| `packages/server` | `ragkit.server` | FastAPI gateway, auth, rate limits |
+| `packages/cli` | `ragkit.cli` | `init`, `ingest`, `search`, `collections`, `templates`, `add agent`, `agents`, `chat`, `eval`, `serve`, `worker`, `scheduler`, `jobs` |
+| `deploy/` | | Dockerfile, Compose stack (`compose/`), Helm chart with KEDA (`helm/ragkit`), Postgres for development |
 
 ## Local models
 
@@ -253,4 +287,4 @@ uv run ruff check packages tests && uv run ruff format packages tests
 | M1 Ingestion (done) | Connectors (files, web, GitHub, custom), parsers, chunking, incremental sync, SQLite and pgvector stores, hybrid search, rerankers, RAG templates |
 | M2 Agents (done) | MCP tools, human approval, structured output, supervisors, SQL analyst / extractor / supervisor templates, templates from GitHub and folders, Confluence and Notion connectors, verified Postgres checkpointer |
 | M3 Harness (done) | OpenTelemetry GenAI tracing (Langfuse, Phoenix, OTLP), token and cost accounting, cost budgets, `ragkit eval` for agents and search with CI gates, PII / prompt-injection / deny guardrails |
-| M4 Scale | Queue-based ingestion workers, scheduled syncs, Helm + KEDA, multi-tenancy and auth, caching |
+| M4 Scale (done) | API keys and JWT, scopes, rate limits, tenant isolation, durable job queue, workers, scheduler, caching, Dockerfile, Compose stack, Helm chart with KEDA |

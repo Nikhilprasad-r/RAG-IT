@@ -1,0 +1,5 @@
+{"id": "reset-link", "input": "How long is a password reset link valid?", "reference": "It expires after 30 minutes.", "expected_sources": ["account/password.md"]}
+{"id": "rate-limit", "input": "What happens if I go over the API rate limit?", "reference": "The limit is 600 requests per minute per token; requests over it get HTTP 429 with a Retry-After header.", "expected_sources": ["api.md"]}
+{"id": "sso-plan", "input": "Which plan has single sign-on and audit logs?", "reference": "The Team plan.", "expected_sources": ["plans.md"]}
+{"id": "region-change", "input": "Can I move my workspace to another region later?", "reference": "No. The region is chosen when the workspace is created and cannot be changed later.", "expected_sources": ["faq.html"]}
+{"id": "not-in-docs", "input": "Do you offer a student discount?", "reference": "The assistant says it could not find this in the documents."}

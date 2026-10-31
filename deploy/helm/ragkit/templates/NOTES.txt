@@ -1,0 +1,9 @@
+ragkit is deploying as {{ include "ragkit.fullname" . }}.
+
+API:        kubectl port-forward svc/{{ include "ragkit.fullname" . }}-api 8000:{{ .Values.api.service.port }}
+Readiness:  curl localhost:8000/ready
+Ingest:     curl -X POST localhost:8000/collections/<name>/ingest -H "X-API-Key: <ingest key>"
+{{- if .Values.worker.keda.enabled }}
+Workers scale with KEDA on queued jobs (min {{ .Values.worker.keda.minReplicaCount }}, max {{ .Values.worker.keda.maxReplicaCount }}).
+{{- end }}
+The secret "{{ .Values.existingSecret }}" must provide DATABASE_URL, model API keys and API key variables.

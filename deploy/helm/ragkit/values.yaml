@@ -1,0 +1,93 @@
+# Image built from deploy/Dockerfile; it contains your ragkit project.
+image:
+  repository: ghcr.io/your-org/ragkit-app
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Secret (created by you, e.g. with External Secrets) holding DATABASE_URL, model
+# API keys and the env vars named by auth.api_keys[].key_env in ragkit.yaml.
+existingSecret: ragkit-secrets
+# Extra plain environment variables for every container.
+env: []
+#  - {name: RAGKIT_TRACE_EXPORTER, value: otlp}
+#  - {name: RAGKIT_TRACE_ENDPOINT, value: http://otel-collector:4318/v1/traces}
+
+# Optional ragkit.yaml that replaces the one in the image.
+projectConfig: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+api:
+  replicas: 2
+  workers: 1                     # uvicorn processes per pod
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 1Gi}
+  service:
+    type: ClusterIP
+    port: 80
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+worker:
+  enabled: true
+  replicas: 1                    # used when KEDA is disabled
+  concurrency: 2                 # jobs per pod
+  # Up to the queue lease (queue.lease_seconds) so running jobs can finish.
+  terminationGracePeriodSeconds: 330
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {memory: 2Gi}
+  keda:
+    enabled: true
+    minReplicaCount: 0           # scale to zero when the queue is empty
+    maxReplicaCount: 10
+    pollingInterval: 15
+    cooldownPeriod: 300
+    queuedJobsPerReplica: 2
+    # Secret key with a libpq connection string KEDA can use, for example
+    # postgresql://user:pass@host:5432/db?sslmode=require
+    connectionSecretKey: KEDA_POSTGRES_CONNECTION
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+scheduler:
+  enabled: true                  # queues collections whose sync_every has elapsed
+  intervalSeconds: 60
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 512Mi}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # SSE streaming: disable proxy buffering, e.g. for ingress-nginx:
+  #   nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  hosts:
+    - host: ragkit.example.com
+      paths: [{path: /, pathType: Prefix}]
+  tls: []

@@ -1,0 +1,11 @@
+# Round-robin across every `api` replica (re-resolved from Docker DNS) without
+# buffering, so server-sent events stream through.
+:8080 {
+	reverse_proxy {
+		dynamic a api 8000 {
+			refresh 5s
+		}
+		lb_policy round_robin
+		flush_interval -1
+	}
+}

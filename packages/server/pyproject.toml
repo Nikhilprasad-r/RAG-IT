@@ -6,15 +6,18 @@ requires-python = ">=3.12"
 dependencies = [
     "ragkit-core",
     "ragkit-retrieval",
+    "ragkit-ingest",
     "ragkit-agents",
     "ragkit-observe",
     "fastapi>=0.160",
     "uvicorn[standard]>=0.50",
+    "pyjwt[crypto]>=2.9",
 ]
 
 [tool.uv.sources]
 ragkit-core = { workspace = true }
 ragkit-retrieval = { workspace = true }
+ragkit-ingest = { workspace = true }
 ragkit-agents = { workspace = true }
 ragkit-observe = { workspace = true }
 

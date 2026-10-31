@@ -1,0 +1,44 @@
+# Production layout: Postgres holds the index, the job queue and agent memory, so
+# any number of API replicas and workers can run side by side.
+name: production
+mode: cluster
+default_model: google_genai:gemini-3.5-flash-lite
+database_url: ${DATABASE_URL}
+
+store:
+  backend: postgres
+
+embeddings:
+  model: google_genai:gemini-embedding-2
+  dimensions: 768
+
+collections:
+  docs:
+    description: Nimbus product docs
+    tenant: acme
+    sync_every: 6h          # the scheduler queues a re-sync every 6 hours
+    sources:
+      - type: files
+        path: data
+
+auth:
+  mode: api_key
+  rate_limit_per_minute: 120
+  api_keys:
+    - {key_env: RAGKIT_KEY_APP, name: acme-app, tenant: acme, scopes: [chat, search]}
+    - {key_env: RAGKIT_KEY_OPS, name: acme-ops, tenant: acme, scopes: [chat, search, ingest]}
+
+cache:
+  search_ttl_seconds: 30    # identical searches within 30 s reuse results
+
+queue:
+  lease_seconds: 300
+  max_attempts: 3
+
+observability:
+  exporter: ${RAGKIT_TRACE_EXPORTER:-none}
+  endpoint: ${RAGKIT_TRACE_ENDPOINT:-http://localhost:4318/v1/traces}
+
+server:
+  host: 0.0.0.0
+  port: 8000

@@ -167,9 +167,12 @@ class IngestPipeline:
             report.failed.append((raw.uri, f"parse: {exc}"))
             return "failed"
 
-        acl = raw.acl or self.project.collection(collection).acl
+        config = self.project.collection(collection)
+        acl = raw.acl or config.acl
+        # Connectors may tag items with a tenant; otherwise the collection's tenant owns them.
+        tenant = raw.tenant_id if raw.tenant_id != "default" else config.tenant
         document = Document(
-            id=document_id(collection, raw.tenant_id, raw.source, raw.uri),
+            id=document_id(collection, tenant, raw.source, raw.uri),
             collection=collection,
             source=raw.source,
             uri=raw.uri,
@@ -178,7 +181,7 @@ class IngestPipeline:
             modality=parsed.modality,
             metadata={**raw.metadata, **parsed.metadata},
             acl=acl,
-            tenant_id=raw.tenant_id,
+            tenant_id=tenant,
             title=parsed.title,
             checksum=checksum,
         )
@@ -192,6 +195,8 @@ class IngestPipeline:
                 chunk.embedding = vector
                 chunk.embedding_model = self.embedder.model
             await self.store.upsert(document, chunks)
+            if previous and previous.id != document.id:  # e.g. the collection's tenant changed
+                await self.store.delete(collection, [previous.id])
         except Exception as exc:
             logger.warning("Indexing %s failed: %s", raw.uri, exc)
             report.failed.append((raw.uri, f"index: {exc}"))

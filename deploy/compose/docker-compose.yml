@@ -1,0 +1,58 @@
+# The production example as a local cluster: Postgres (pgvector), two API
+# replicas behind Caddy, two workers and a scheduler.
+#
+#   cp examples/production/.env.example deploy/compose/.env   # then fill it in
+#   docker compose -f deploy/compose/docker-compose.yml up --build -d
+#   curl -X POST localhost:8080/collections/docs/ingest -H "X-API-Key: $RAGKIT_KEY_OPS"
+name: ragkit
+
+x-app: &app
+  image: ragkit-app:local
+  build:
+    context: ../..
+    dockerfile: deploy/Dockerfile
+    args: {PROJECT: examples/production}
+  env_file: .env
+  depends_on:
+    postgres: {condition: service_healthy}
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment: {POSTGRES_USER: ragkit, POSTGRES_PASSWORD: ragkit, POSTGRES_DB: ragkit}
+    volumes: [pgdata:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragkit"]
+      interval: 3s
+      retries: 20
+
+  api:
+    <<: *app
+    deploy: {replicas: 2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')"]
+      interval: 5s
+      retries: 20
+
+  worker:
+    <<: *app
+    command: ["ragkit", "worker", "--no-schedule", "--concurrency", "2"]
+    deploy: {replicas: 2}
+    stop_grace_period: 5m        # let running jobs finish on shutdown
+    healthcheck: {disable: true}
+
+  scheduler:
+    <<: *app
+    command: ["ragkit", "scheduler"]
+    healthcheck: {disable: true}
+
+  gateway:
+    image: caddy:2.10-alpine
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+    ports: ["8080:8080"]
+    depends_on:
+      api: {condition: service_healthy}
+
+volumes:
+  pgdata:

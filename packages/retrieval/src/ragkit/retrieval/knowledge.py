@@ -9,7 +9,9 @@ from typing import Any, Self
 from ragkit.core import telemetry as t
 from ragkit.core.config import ProjectConfig, RerankConfig
 from ragkit.core.errors import ConfigError
+from ragkit.core.identity import get_identity
 from ragkit.core.types import Query, ScoredChunk
+from ragkit.retrieval.cache import TTLCache, cache_query_embeddings
 from ragkit.retrieval.embedders import Embedder, create_embedder
 from ragkit.retrieval.hybrid import HybridRetriever, SearchMode, rrf_fuse
 from ragkit.retrieval.rerankers import create_reranker
@@ -53,6 +55,7 @@ class KnowledgeBase:
         self._embedder = embedder
         self._rerankers: dict[tuple[str, str | None], Any] = {}
         self._checked_models: set[str] = set()
+        self._results = TTLCache(project.cache.search_entries, project.cache.search_ttl_seconds)
 
     async def __aenter__(self) -> Self:
         if self._owns_store:
@@ -66,7 +69,9 @@ class KnowledgeBase:
     @property
     def embedder(self) -> Embedder:
         if self._embedder is None:
-            self._embedder = create_embedder(self.project.embeddings)
+            self._embedder = cache_query_embeddings(
+                create_embedder(self.project.embeddings), self.project.cache.query_embeddings
+            )
         return self._embedder
 
     async def search(
@@ -80,11 +85,19 @@ class KnowledgeBase:
         rerank: RerankConfig | None = None,
         use_rerank: bool = True,
         filters: dict[str, Any] | None = None,
-        principals: Sequence[str] = (),
-        tenant_id: str = "default",
+        principals: Sequence[str] | None = None,
+        tenant_id: str | None = None,
     ) -> list[ScoredChunk]:
-        """Hybrid search, then rerank with `rerank` or the project's default reranker."""
-        self.project.collection(collection)
+        """Hybrid search, then rerank with `rerank` or the project's default reranker.
+
+        Tenant and principals default to the current caller's (see
+        `ragkit.core.identity`). A `shared` collection is searched under its own
+        tenant, so every tenant can read it, subject to its ACLs.
+        """
+        config = self.project.collection(collection)
+        identity = get_identity()
+        tenant_id = config.tenant if config.shared else (tenant_id or identity.tenant_id)
+        principals = list(identity.principals if principals is None else principals)
         if mode != "sparse":
             await self._check_embedding_model(collection)
         rerank = (rerank or self.project.rerank) if use_rerank else None
@@ -94,10 +107,21 @@ class KnowledgeBase:
             text=text,
             collection=collection,
             tenant_id=tenant_id,
-            principals=list(principals),
+            principals=principals,
             filters=filters or {},
             top_k=max(candidates, final_k) if rerank else final_k,
         )
+        cache_key = (
+            query.model_dump_json(),
+            mode,
+            candidates,
+            final_k,
+            rerank.model_dump_json() if rerank else None,
+        )
+        if (cached := self._results.get(cache_key)) is not None:
+            if (log := _retrieval_log.get()) is not None:
+                log.extend(cached)
+            return list(cached)
         attributes = {
             t.LANGFUSE_TYPE: "retriever",
             "ragkit.collection": collection,
@@ -121,9 +145,13 @@ class KnowledgeBase:
                     {"uri": r.uri, "score": r.score, "text": r.chunk.text[:300]} for r in results
                 ],
             )
+        self._results.put(cache_key, results)
         if (log := _retrieval_log.get()) is not None:
             log.extend(results)
         return results
+
+    def clear_cache(self) -> None:
+        self._results.clear()
 
     async def search_many(
         self, collections: Sequence[str], text: str, *, top_k: int | None = None, **options: Any

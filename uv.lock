@@ -3327,8 +3327,10 @@ version = "0.1.0"
 source = { editable = "packages/server" }
 dependencies = [
     { name = "fastapi" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "ragkit-agents" },
     { name = "ragkit-core" },
+    { name = "ragkit-ingest" },
     { name = "ragkit-observe" },
     { name = "ragkit-retrieval" },
     { name = "uvicorn", extra = ["standard"] },
@@ -3337,8 +3339,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.160" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.9" },
     { name = "ragkit-agents", editable = "packages/agents" },
     { name = "ragkit-core", editable = "packages/core" },
+    { name = "ragkit-ingest", editable = "packages/ingest" },
     { name = "ragkit-observe", editable = "packages/observe" },
     { name = "ragkit-retrieval", editable = "packages/retrieval" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.50" },

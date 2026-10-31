@@ -45,8 +45,17 @@ async def _open_postgres(
         raise ConfigError(
             "The postgres checkpointer needs `ragkit-agents[postgres]` installed."
         ) from exc
+    import psycopg
+
+    from ragkit.retrieval.stores.postgres import schema_lock
+
     saver = await stack.enter_async_context(
         AsyncPostgresSaver.from_conn_string(project.database_url, serde=serde)
     )
-    await saver.setup()
+    # Several pods may start together; run LangGraph's migrations one at a time.
+    async with (
+        await psycopg.AsyncConnection.connect(project.database_url, autocommit=True) as conn,
+        schema_lock(conn),
+    ):
+        await saver.setup()
     return saver

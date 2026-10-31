@@ -1,0 +1,28 @@
+# RAG chat: answers questions from your documents with citations.
+# Retrieves once per message and answers in a single model call (fast and cheap).
+name: rag-chat
+description: Answers questions from your documents with numbered citations (single-pass RAG).
+pattern: rag-chat
+
+system_prompt: prompts/system.md
+
+retrieval:
+  collections: [docs]   # collections defined in ragkit.yaml
+  mode: hybrid          # dense | sparse | hybrid
+  top_k: 6              # passages given to the model
+  candidates: 50        # results fetched before reranking
+  # rerank: { provider: cohere }   # overrides the project's reranker
+
+memory:
+  checkpointer: postgres   # shared by every API replica
+
+budget:
+  max_steps: 2
+
+evals:
+  dataset: evals/golden.jsonl
+  gate:
+    correctness: 0.8
+    groundedness: 0.8
+    source_recall: 0.75
+    max_error_rate: 0

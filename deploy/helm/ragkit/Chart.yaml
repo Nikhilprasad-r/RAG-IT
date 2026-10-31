@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ragkit
+description: A ragkit application - API, ingestion workers (KEDA-scaled) and scheduler.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

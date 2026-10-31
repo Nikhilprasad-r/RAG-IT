@@ -85,6 +85,22 @@ class CollectionConfig(_Strict):
     acl: list[str] = Field(
         default_factory=list, description="Principals allowed to read; empty means everyone."
     )
+    tenant: str = Field(default="default", description="Tenant that owns the documents.")
+    shared: bool = Field(
+        default=False, description="Searchable by every tenant (still subject to acl)."
+    )
+    sync_every: str | None = Field(
+        default=None,
+        pattern=r"^\d+[smhd]$",
+        description="Re-ingest on this interval when a scheduler runs, e.g. 15m or 6h.",
+    )
+
+    @property
+    def sync_seconds(self) -> float | None:
+        if not self.sync_every:
+            return None
+        units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        return int(self.sync_every[:-1]) * units[self.sync_every[-1]]
 
 
 class McpServerConfig(_Strict):
@@ -152,6 +168,69 @@ class EvalsConfig(_Strict):
     )
 
 
+Scope = Literal["chat", "search", "ingest", "admin"]
+ALL_SCOPES: tuple[str, ...] = ("chat", "search", "ingest", "admin")
+
+
+class ApiKeyConfig(_Strict):
+    key_env: str = Field(description="Environment variable that holds the key.")
+    name: str | None = Field(default=None, description="Label used as the user id in traces.")
+    tenant: str = "default"
+    principals: list[str] = Field(default_factory=list)
+    scopes: list[Scope] = Field(default_factory=lambda: ["chat", "search"])
+
+
+class JwtConfig(_Strict):
+    jwks_url: str | None = Field(default=None, description="For RS256/ES256 tokens.")
+    secret_env: str | None = Field(default=None, description="For HS256 tokens.")
+    algorithms: list[str] = Field(default_factory=lambda: ["RS256"])
+    issuer: str | None = None
+    audience: str | None = None
+    tenant_claim: str = "tenant"
+    principals_claim: str = "groups"
+    scopes_claim: str = "scope"
+    default_scopes: list[Scope] = Field(default_factory=lambda: ["chat", "search"])
+
+    @model_validator(mode="after")
+    def _key_source(self) -> Self:
+        if bool(self.jwks_url) == bool(self.secret_env):
+            raise ValueError("set exactly one of jwks_url or secret_env")
+        return self
+
+
+class AuthConfig(_Strict):
+    mode: Literal["none", "api_key", "jwt"] = "none"
+    api_keys: list[ApiKeyConfig] = Field(default_factory=list)
+    jwt: JwtConfig | None = None
+    rate_limit_per_minute: int | None = Field(
+        default=None, ge=1, description="Per caller and server process."
+    )
+
+    @model_validator(mode="after")
+    def _mode_settings(self) -> Self:
+        if self.mode == "api_key" and not self.api_keys:
+            raise ValueError("auth mode api_key needs api_keys")
+        if self.mode == "jwt" and self.jwt is None:
+            raise ValueError("auth mode jwt needs a jwt section")
+        return self
+
+
+class QueueConfig(_Strict):
+    lease_seconds: int = Field(default=300, ge=10, description="A job is retried after this.")
+    max_attempts: int = Field(default=3, ge=1)
+    poll_seconds: float = Field(default=2.0, gt=0)
+
+
+class CacheConfig(_Strict):
+    query_embeddings: int = Field(
+        default=10_000, ge=0, description="Query embeddings kept in memory; 0 disables."
+    )
+    search_ttl_seconds: float = Field(
+        default=0, ge=0, description="Reuse identical search results for this long; 0 disables."
+    )
+    search_entries: int = Field(default=10_000, ge=1)
+
+
 class ProjectConfig(_Strict):
     name: str
     mode: Literal["local", "cluster"] = "local"
@@ -169,6 +248,9 @@ class ProjectConfig(_Strict):
         default_factory=dict, description="Prices by provider:model, used for cost tracking."
     )
     evals: EvalsConfig = Field(default_factory=EvalsConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    queue: QueueConfig = Field(default_factory=QueueConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
 
     root: Path = Field(default=Path("."), exclude=True)
 

@@ -1,0 +1,11 @@
+.venv
+**/__pycache__
+**/*.pyc
+**/.ragkit
+**/.env
+.git
+.pytest_cache
+.ruff_cache
+tests
+agent.py
+main.py

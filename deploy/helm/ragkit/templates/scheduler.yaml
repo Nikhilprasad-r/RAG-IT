@@ -1,0 +1,32 @@
+{{- if .Values.scheduler.enabled }}
+# One scheduler queues collections whose sync_every has elapsed. It runs apart
+# from the workers so syncs still start when KEDA has scaled them to zero.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ragkit.fullname" . }}-scheduler
+  labels:
+    {{- include "ragkit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "ragkit.selector" (dict "root" . "component" "scheduler") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ragkit.labels" . | nindent 8 }}
+        app.kubernetes.io/component: scheduler
+      annotations:
+        checksum/config: {{ .Values.projectConfig | sha256sum }}
+    spec:
+      {{- include "ragkit.podSpec" . | nindent 6 }}
+      containers:
+        - name: scheduler
+          {{- include "ragkit.container" . | nindent 10 }}
+          command: ["ragkit", "scheduler", "--every", "{{ .Values.scheduler.intervalSeconds }}"]
+          resources:
+            {{- toYaml .Values.scheduler.resources | nindent 12 }}
+{{- end }}

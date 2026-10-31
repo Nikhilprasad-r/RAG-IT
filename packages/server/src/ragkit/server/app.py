@@ -8,6 +8,9 @@ Endpoints:
   POST /agents/{name}/resume    continue a turn waiting for approval (add /stream for SSE)
   GET  /collections             collections with document and chunk counts
   POST /collections/{name}/search   hybrid search, reranked when configured
+  POST /collections/{name}/ingest   queue an ingestion job for the workers
+  GET  /jobs, GET /jobs/{id}        ingestion job status
+  GET  /health, GET /ready          liveness and readiness probes
 """
 
 import json
@@ -34,8 +37,11 @@ from ragkit.agents.runtime import (
 )
 from ragkit.core.config import ProjectConfig
 from ragkit.core.errors import ConfigError
+from ragkit.core.identity import Identity, acting_as
+from ragkit.ingest.jobs import Job, JobNotFoundError, JobQueue, create_queue
 from ragkit.observe import configure_tracing, instrument_app
 from ragkit.retrieval import KnowledgeBase
+from ragkit.server.auth import RateLimiter, build_authenticator, require, scoped_thread
 
 
 class ChatRequest(BaseModel):
@@ -76,10 +82,10 @@ class ChatResponse(BaseModel):
     usage: Usage
 
     @classmethod
-    def of(cls, result: AgentResult) -> "ChatResponse":
+    def of(cls, result: AgentResult, thread_id: str) -> "ChatResponse":
         return cls(
             reply=result.reply,
-            thread_id=result.thread_id,
+            thread_id=thread_id,
             status=result.status,
             pending=[_pending_info(p) for p in result.pending],
             structured=result.structured,
@@ -124,6 +130,28 @@ class SearchHit(BaseModel):
     metadata: dict[str, Any]
 
 
+class IngestRequest(BaseModel):
+    full: bool = Field(default=False, description="Re-process every item, not just changes.")
+
+
+class JobInfo(BaseModel):
+    id: str
+    collection: str
+    status: str
+    full: bool
+    attempts: int
+    requested_at: float
+    requested_by: str | None
+    started_at: float | None
+    finished_at: float | None
+    report: dict[str, Any] | None
+    error: str | None
+
+    @classmethod
+    def of(cls, job: Job) -> "JobInfo":
+        return cls(**{name: getattr(job, name) for name in cls.model_fields})
+
+
 class CollectionInfo(BaseModel):
     name: str
     description: str
@@ -145,6 +173,9 @@ def create_app(
             if project.collections:
                 knowledge = await stack.enter_async_context(KnowledgeBase(project))
             app.state.knowledge = knowledge
+            app.state.jobs = None
+            if project.collections:
+                app.state.jobs = await stack.enter_async_context(create_queue(project))
             app.state.runtime = await stack.enter_async_context(
                 AgentRuntime(project, model_factory=model_factory, knowledge=knowledge)
             )
@@ -166,12 +197,34 @@ def create_app(
             allow_headers=["*"],
         )
 
+    authenticate = build_authenticator(project.auth)
+    limiter = RateLimiter(project.auth.rate_limit_per_minute)
+
+    async def authorize(request: Request, scope: str) -> Identity:
+        identity = await authenticate(request)
+        limiter.check(identity)
+        require(identity, scope)
+        return identity
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/ready")
+    async def ready(request: Request) -> dict[str, str]:
+        """Ready once agents are loaded and the store answers."""
+        if getattr(request.app.state, "runtime", None) is None:
+            raise HTTPException(status_code=503, detail="Starting.")
+        if request.app.state.knowledge is not None:
+            try:
+                await request.app.state.knowledge.store.stats()
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"Store unavailable: {exc}") from exc
+        return {"status": "ready"}
+
     @app.get("/agents")
     async def list_agents(request: Request) -> list[AgentInfo]:
+        await authorize(request, "chat")
         return [
             AgentInfo(
                 name=agent.name,
@@ -183,29 +236,49 @@ def create_app(
 
     @app.post("/agents/{name}/chat")
     async def chat(name: str, body: ChatRequest, request: Request) -> ChatResponse:
-        return ChatResponse.of(await _agent(request, name).ainvoke(body.message, body.thread_id))
+        identity = await authorize(request, "chat")
+        agent = _agent(request, name)
+        thread_id = body.thread_id or new_thread_id()
+        with acting_as(identity):
+            result = await agent.ainvoke(body.message, scoped_thread(identity, thread_id))
+        return ChatResponse.of(result, thread_id)
 
     @app.post("/agents/{name}/stream")
     async def stream(name: str, body: ChatRequest, request: Request) -> StreamingResponse:
+        identity = await authorize(request, "chat")
         agent = _agent(request, name)
         thread_id = body.thread_id or new_thread_id()
-        if await agent.pending(thread_id):  # fail with a status code, not mid-stream
+        internal = scoped_thread(identity, thread_id)
+        if await agent.pending(internal):  # fail with a status code, not mid-stream
             raise ThreadWaitingError(f"Thread {thread_id} is waiting for approval.")
-        return _sse_response(agent, agent.astream(body.message, thread_id), thread_id)
+        tokens = agent.astream(body.message, internal)
+        return _sse_response(agent, tokens, identity, internal, thread_id)
 
     @app.post("/agents/{name}/resume")
     async def resume(name: str, body: ResumeRequest, request: Request) -> ChatResponse:
-        result = await _agent(request, name).resume(body.thread_id, body.decisions)
-        return ChatResponse.of(result)
+        identity = await authorize(request, "chat")
+        agent = _agent(request, name)
+        with acting_as(identity):
+            result = await agent.resume(scoped_thread(identity, body.thread_id), body.decisions)
+        return ChatResponse.of(result, body.thread_id)
 
     @app.post("/agents/{name}/resume/stream")
     async def resume_stream(name: str, body: ResumeRequest, request: Request) -> StreamingResponse:
+        identity = await authorize(request, "chat")
         agent = _agent(request, name)
-        tokens = await agent.astream_resume(body.thread_id, body.decisions)
-        return _sse_response(agent, tokens, body.thread_id)
+        internal = scoped_thread(identity, body.thread_id)
+        tokens = await agent.astream_resume(internal, body.decisions)
+        return _sse_response(agent, tokens, identity, internal, body.thread_id)
+
+    def visible(identity: Identity, collection: str) -> bool:
+        config = project.collections.get(collection)
+        if config is None:
+            return False
+        return config.shared or config.tenant == identity.tenant_id or identity.can("admin")
 
     @app.get("/collections")
     async def list_collections(request: Request) -> list[CollectionInfo]:
+        identity = await authorize(request, "search")
         knowledge = _knowledge(request)
         stats = {s.collection: s for s in await knowledge.store.stats()}
         return [
@@ -217,22 +290,25 @@ def create_app(
                 embedding_model=stats[name].embedding_model if name in stats else None,
             )
             for name, config in project.collections.items()
+            if visible(identity, name)
         ]
 
     @app.post("/collections/{name}/search")
     async def search(name: str, body: SearchRequest, request: Request) -> list[SearchHit]:
+        identity = await authorize(request, "search")
         knowledge = _knowledge(request)
-        if name not in project.collections:
+        if not visible(identity, name):
             raise HTTPException(status_code=404, detail=f"No collection named {name!r}.")
         try:
-            results = await knowledge.search(
-                name,
-                body.query,
-                top_k=body.top_k,
-                mode=body.mode,
-                filters=body.filters,
-                use_rerank=body.rerank,
-            )
+            with acting_as(identity):
+                results = await knowledge.search(
+                    name,
+                    body.query,
+                    top_k=body.top_k,
+                    mode=body.mode,
+                    filters=body.filters,
+                    use_rerank=body.rerank,
+                )
         except ConfigError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return [
@@ -249,7 +325,52 @@ def create_app(
             for r in results
         ]
 
+    @app.post("/collections/{name}/ingest", status_code=202)
+    async def queue_ingest(
+        name: str, request: Request, body: IngestRequest | None = None
+    ) -> JobInfo:
+        """Queue an ingestion job for `ragkit worker`; returns the (possibly merged) job."""
+        identity = await authorize(request, "ingest")
+        if not visible(identity, name) or (
+            project.collections[name].tenant != identity.tenant_id and not identity.can("admin")
+        ):
+            raise HTTPException(status_code=404, detail=f"No collection named {name!r}.")
+        job = await _jobs(request).enqueue(
+            name, full=bool(body and body.full), requested_by=identity.user_id or "api"
+        )
+        return JobInfo.of(job)
+
+    @app.get("/jobs")
+    async def list_jobs(
+        request: Request, collection: str | None = None, limit: int = 50
+    ) -> list[JobInfo]:
+        identity = await authorize(request, "ingest")
+        jobs = await _jobs(request).list(collection=collection, limit=min(limit, 500))
+        return [JobInfo.of(j) for j in jobs if owns(identity, j.collection)]
+
+    @app.get("/jobs/{job_id}")
+    async def get_job(job_id: str, request: Request) -> JobInfo:
+        identity = await authorize(request, "ingest")
+        try:
+            job = await _jobs(request).get(job_id)
+        except JobNotFoundError:
+            job = None
+        if job is None or not owns(identity, job.collection):
+            raise HTTPException(status_code=404, detail=f"No job {job_id}.")
+        return JobInfo.of(job)
+
+    def owns(identity: Identity, collection: str) -> bool:
+        config = project.collections.get(collection)
+        return identity.can("admin") or (config is not None and config.tenant == identity.tenant_id)
+
     return app
+
+
+def _jobs(request: Request) -> JobQueue:
+    jobs = request.app.state.jobs
+    if jobs is None:
+        raise HTTPException(status_code=404, detail="No collections are defined in ragkit.yaml.")
+    return jobs
 
 
 def _knowledge(request: Request) -> KnowledgeBase:
@@ -259,21 +380,26 @@ def _knowledge(request: Request) -> KnowledgeBase:
     return knowledge
 
 
-def _sse_response(agent: Agent, tokens: AsyncIterator[str], thread_id: str) -> StreamingResponse:
+def _sse_response(
+    agent: Agent, tokens: AsyncIterator[str], identity: Identity, internal: str, thread_id: str
+) -> StreamingResponse:
     return StreamingResponse(
-        _sse(agent, tokens, thread_id),
+        _sse(agent, tokens, identity, internal, thread_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Thread-Id": thread_id},
     )
 
 
-async def _sse(agent: Agent, tokens: AsyncIterator[str], thread_id: str) -> AsyncIterator[str]:
+async def _sse(
+    agent: Agent, tokens: AsyncIterator[str], identity: Identity, internal: str, thread_id: str
+) -> AsyncIterator[str]:
     """Events: start, token*, then approval_required (with pending actions) or end."""
     yield _event("start", {"thread_id": thread_id})
     try:
-        async for token in tokens:
-            yield _event("token", {"text": token})
-        pending = await agent.pending(thread_id)
+        with acting_as(identity):  # the body runs after the handler has returned
+            async for token in tokens:
+                yield _event("token", {"text": token})
+        pending = await agent.pending(internal)
     except Exception as exc:  # the status code is already sent, so report errors in-stream
         yield _event("error", {"message": str(exc)})
         return

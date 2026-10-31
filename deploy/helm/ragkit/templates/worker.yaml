@@ -1,0 +1,80 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ragkit.fullname" . }}-worker
+  labels:
+    {{- include "ragkit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  {{- if not .Values.worker.keda.enabled }}
+  replicas: {{ .Values.worker.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ragkit.selector" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ragkit.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/config: {{ .Values.projectConfig | sha256sum }}
+    spec:
+      {{- include "ragkit.podSpec" . | nindent 6 }}
+      # SIGTERM stops claiming new jobs; running ones finish within this window.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          {{- include "ragkit.container" . | nindent 10 }}
+          command: ["ragkit", "worker", "--no-schedule",
+                    "--concurrency", "{{ .Values.worker.concurrency }}"]
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.worker.keda.enabled }}
+---
+# Scales workers on the number of queued ingestion jobs (needs KEDA installed).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "ragkit.fullname" . }}-worker
+  labels:
+    {{- include "ragkit.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "ragkit.fullname" . }}-worker
+  minReplicaCount: {{ .Values.worker.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.worker.keda.maxReplicaCount }}
+  pollingInterval: {{ .Values.worker.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.worker.keda.cooldownPeriod }}
+  triggers:
+    - type: postgresql
+      metadata:
+        query: "SELECT COUNT(*) FROM ragkit_jobs WHERE status IN ('queued', 'running')"
+        targetQueryValue: {{ .Values.worker.keda.queuedJobsPerReplica | quote }}
+        activationTargetQueryValue: "0"
+      authenticationRef:
+        name: {{ include "ragkit.fullname" . }}-postgres
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ include "ragkit.fullname" . }}-postgres
+  labels:
+    {{- include "ragkit.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: {{ .Values.existingSecret }}
+      key: {{ .Values.worker.keda.connectionSecretKey }}
+{{- end }}
+{{- end }}
