@@ -1,0 +1,117 @@
+site_name: ragkit
+site_description: Build scalable RAG and agent applications from YAML, copy-in templates and plugins.
+site_url: https://nikhilprasad-r.github.io/RAG-IT/
+repo_url: https://github.com/Nikhilprasad-r/RAG-IT
+repo_name: Nikhilprasad-r/RAG-IT
+edit_uri: edit/main/docs/
+strict: true
+exclude_docs: |
+  gen_reference.py
+validation:
+  links:
+    anchors: warn
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle: {icon: material/weather-sunny, name: Light mode}
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - packages/core/src
+            - packages/retrieval/src
+            - packages/ingest/src
+            - packages/agents/src
+            - packages/observe/src
+            - packages/evals/src
+            - packages/server/src
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+            docstring_section_style: list
+            filters: ["!^_"]
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Your first project: getting-started/first-project.md
+  - Concepts:
+      - Architecture: concepts/architecture.md
+      - Projects and configuration: concepts/configuration.md
+      - Data model: concepts/data-model.md
+      - Agents: concepts/agents.md
+  - Guides:
+      - Ingesting data: guides/ingestion.md
+      - Custom connectors: guides/custom-connectors.md
+      - Search and reranking: guides/search.md
+      - Agents and templates: guides/agents-and-templates.md
+      - Tools and MCP: guides/tools-and-mcp.md
+      - Human approval: guides/human-approval.md
+      - Structured output: guides/structured-output.md
+      - Multi-agent supervisors: guides/multi-agent.md
+      - Guardrails: guides/guardrails.md
+      - Observability and cost: guides/observability.md
+      - Evals: guides/evals.md
+      - Auth and multi-tenancy: guides/auth-and-tenancy.md
+  - Deploy and operate:
+      - Production setup: deploy/production.md
+      - Docker Compose: deploy/docker-compose.md
+      - Kubernetes: deploy/kubernetes.md
+      - Operations: deploy/operations.md
+  - Extending: extending/plugins.md
+  - Reference:
+      - ragkit.yaml: reference/project-config.md
+      - agent.yaml: reference/agent-manifest.md
+      - Templates: reference/templates.md
+      - CLI: reference/cli.md
+      - HTTP API: reference/http-api.md
+      - Python API: reference/python-api.md
+  - Contributing: contributing.md

@@ -12,6 +12,11 @@ and search are served over HTTP.
 > queue with ingestion workers and scheduled syncs, query and result caching,
 > and deployment: a container image, a Compose stack and a Helm chart with KEDA.
 
+**Documentation:** `uv sync --group docs && uv run mkdocs serve`, then open
+<http://127.0.0.1:8000>. The site covers getting started, concepts, a guide for each
+feature, deployment, and generated references for `ragkit.yaml`, `agent.yaml`, the
+CLI and the HTTP API. The sources are in [`docs/`](docs/index.md).
+
 ## Quickstart
 
 ```bash
@@ -274,9 +279,11 @@ A plain `uv sync` removes them again; their tests are skipped when they are miss
 
 ```bash
 uv run pytest
+uv run python docs/gen_reference.py     # after changing config, commands, endpoints or templates
+uv run mkdocs build                     # strict: broken links fail
 docker compose -f deploy/docker-compose.yml up -d
 RAGKIT_TEST_DATABASE_URL=postgresql://ragkit:ragkit@localhost:5433/ragkit uv run pytest
-uv run ruff check packages tests && uv run ruff format packages tests
+uv run ruff check packages tests docs && uv run ruff format packages tests docs
 ```
 
 ## Roadmap

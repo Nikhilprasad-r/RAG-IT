@@ -16,6 +16,7 @@ Endpoints:
 import json
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -299,6 +300,10 @@ def create_app(
         knowledge = _knowledge(request)
         if not visible(identity, name):
             raise HTTPException(status_code=404, detail=f"No collection named {name!r}.")
+        config = project.collections[name]
+        if identity.can("admin") and not config.shared:
+            # Admins may search any tenant's collection, under that tenant.
+            identity = replace(identity, tenant_id=config.tenant)
         try:
             with acting_as(identity):
                 results = await knowledge.search(

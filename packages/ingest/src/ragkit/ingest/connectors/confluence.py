@@ -31,8 +31,12 @@ class ConfluenceOptions(ConnectorOptions):
     )
     spaces: list[str] = Field(min_length=1, description="Space keys to ingest.")
     email_env: str = "CONFLUENCE_EMAIL"
+    """Variable with the Atlassian account email; when unset, the token is sent as a bearer token.
+    """
     token_env: str = "CONFLUENCE_API_TOKEN"
+    """Variable with the API token."""
     page_size: int = Field(default=100, ge=1, le=250)
+    """Pages per API request."""
 
 
 class ConfluenceConnector:

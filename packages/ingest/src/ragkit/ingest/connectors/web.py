@@ -26,15 +26,22 @@ USER_AGENT = "ragkit-crawler/0.1"
 
 class WebOptions(ConnectorOptions):
     urls: list[str] = Field(min_length=1)
+    """Start pages. The crawl stays under each one's host and path."""
     max_pages: int = Field(default=100, ge=1)
+    """Most pages fetched per run."""
     max_depth: int = Field(default=2, ge=0)
+    """Link hops from the start pages."""
     include: list[str] = Field(
         default_factory=list, description="URL globs to keep; empty keeps every in-scope page."
     )
     exclude: list[str] = Field(default_factory=list)
+    """URL globs to skip."""
     respect_robots: bool = True
+    """Obey robots.txt."""
     concurrency: int = Field(default=4, ge=1)
+    """Pages fetched at once."""
     timeout: float = Field(default=20, gt=0)
+    """Seconds per request."""
 
 
 class WebConnector:

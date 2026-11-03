@@ -1,0 +1,82 @@
+# Build the documentation site and publish it to GitHub Pages.
+#
+# Pull requests: build only (the strict build fails on broken links, stale
+# generated references or invalid examples in the docs).
+# Pushes to main: build and deploy.
+#
+# One-time setup: Settings > Pages > Build and deployment > Source: GitHub Actions.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "packages/**"
+      - "examples/**"
+      - "tests/test_docs.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "packages/**"
+      - "tests/test_docs.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push replaces a queued one but never
+# cancels a deployment in progress.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NO_MKDOCS_2_WARNING: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --frozen --group docs
+
+      - name: Generated reference pages are current
+        run: uv run python docs/gen_reference.py --check
+
+      - name: Examples in the docs are valid
+        run: uv run pytest tests/test_docs.py -q
+
+      - name: Build (strict)
+        run: uv run mkdocs build --strict --site-dir _site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

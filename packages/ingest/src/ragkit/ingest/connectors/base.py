@@ -35,7 +35,7 @@ _EXTRA_TYPES = {
 
 
 class ConnectorOptions(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", use_attribute_docstrings=True)
 
     name: str | None = None
     """Overrides the connector's default identity. Changing it re-ingests the source."""

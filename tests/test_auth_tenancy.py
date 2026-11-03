@@ -24,6 +24,7 @@ auth:
     - {key_env: KEY_ACME, name: alice, tenant: acme, scopes: [chat, search, ingest]}
     - {key_env: KEY_ACME_HR, name: hank, tenant: acme, principals: [hr], scopes: [search]}
     - {key_env: KEY_GLOBEX, name: gina, tenant: globex, scopes: [chat, search]}
+    - {key_env: KEY_ADMIN, name: root, tenant: platform, scopes: [admin]}
 collections:
   acme-docs:
     tenant: acme
@@ -44,7 +45,12 @@ collections:
 
 @pytest.fixture
 def saas(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectConfig:
-    for env, key in [("KEY_ACME", "k-acme"), ("KEY_ACME_HR", "k-hr"), ("KEY_GLOBEX", "k-globex")]:
+    for env, key in [
+        ("KEY_ACME", "k-acme"),
+        ("KEY_ACME_HR", "k-hr"),
+        ("KEY_GLOBEX", "k-globex"),
+        ("KEY_ADMIN", "k-admin"),
+    ]:
         monkeypatch.setenv(env, key)
     for folder, text in [
         ("acme", "# Acme refunds\n\nAcme refunds within 14 days."),
@@ -82,6 +88,8 @@ async def test_keys_scopes_and_tenant_isolation(saas: ProjectConfig) -> None:
         shared = _search(client, "k-globex", "public", "status page")
         hr_hidden = _search(client, "k-acme", "acme-hr", "salary bands")
         hr_visible = _search(client, "k-hr", "acme-hr", "salary bands")
+        admin_view = client.get("/collections", headers={"X-API-Key": "k-admin"}).json()
+        admin_search = _search(client, "k-admin", "globex-docs", "refunds")
         no_scope = client.post(
             "/agents/x/chat", json={"message": "hi"}, headers={"X-API-Key": "k-hr"}
         )
@@ -94,6 +102,8 @@ async def test_keys_scopes_and_tenant_isolation(saas: ProjectConfig) -> None:
     assert hr_hidden.json() == []  # ACL: alice lacks the hr principal
     assert "March" in hr_visible.json()[0]["text"]
     assert no_scope.status_code == 403
+    assert len(admin_view) == 4
+    assert "60 days" in admin_search.json()[0]["text"]
 
 
 async def test_agents_search_as_the_caller(saas: ProjectConfig) -> None:
